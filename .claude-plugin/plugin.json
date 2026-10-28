@@ -1,0 +1,1 @@
+{ "name": "bash-feed", "version": "0.1.0", "description": "Streams each Bash command Claude runs, with color-coded output and short explanations, to a per-session Terminal window", "types": "./types/index.d.ts" }

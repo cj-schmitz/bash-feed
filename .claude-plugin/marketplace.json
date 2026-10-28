@@ -1,0 +1,5 @@
+{
+  "name": "bash-feed",
+  "owner": { "name": "cj-schmitz" },
+  "plugins": [{ "name": "bash-feed", "source": "./" }]
+}
