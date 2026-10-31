@@ -128,5 +128,10 @@
   "author": {
     "name": "cj-schmitz",
     "url": "https://bizonmt.com"
-  }
+  },
+  "homepage": "https://github.com/cj-schmitz/bash-feed",
+  "repository": "https://github.com/cj-schmitz/bash-feed",
+  "documentationUrl": "https://github.com/cj-schmitz/bash-feed#readme",
+  "supportUrl": "https://github.com/cj-schmitz/bash-feed/issues",
+  "privacyPolicyUrl": "https://github.com/cj-schmitz/bash-feed/blob/main/PRIVACY.md"
 }
