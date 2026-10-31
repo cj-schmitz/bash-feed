@@ -12,11 +12,41 @@ const runs = atom({ plugin: 'bash-feed', key: 'runs' } as const, [], {
   shape: 'runs-1',
 })
 
-// Each session logs to its own file, tailed in its own Terminal window titled with the
+// Each session logs to its own file, followed in its own terminal window titled with the
 // session's short id, so ending one session closes only its window.
 let sessionId = ''
-const logFile = () => `$HOME/.claude/bash-feed/${sessionId || 'unknown'}.log`
+// Where the system is: found once by bin/feed.py probe (Python runs everything outside the
+// mod, the same way on macOS, Linux and Windows).
+const host = { python: [] as string[], platform: '', dir: '', home: '', ready: undefined as Promise<boolean> | undefined }
+const logFile = () => `${host.dir}/${sessionId || 'unknown'}.log`
 const windowTitle = () => `Bash feed ${sessionId.slice(0, 8)}`
+// The key that opens a link in the plain window: ⌘ in macOS Terminal, Ctrl elsewhere.
+const clickKey = () => (host.platform === 'darwin' ? '⌘' : 'ctrl')
+const fileUrl = (path: string) => `file://${path.startsWith('/') ? '' : '/'}${encodeURI(path)}`
+const linkTo = (file: string) => `${clickKey()}-click: ${fileUrl(file)}`
+
+const PYTHONS = [['/usr/bin/python3'], ['python3'], ['py', '-3'], ['python']]
+
+// Finds a Python 3 and the feed folder; resolves false when there is no Python.
+const setup = ($: EngineInterface): Promise<boolean> =>
+  (host.ready ??= (async () => {
+    for (const python of PYTHONS) {
+      const ran = await $.process.run([...python, '-I', `${$.plugin.root}/bin/feed.py`, 'probe']).catch(() => undefined)
+      const [platform = '', dir = ''] = ran?.exitCode === 0 ? ran.stdout.trim().split(/\r?\n/) : []
+      if (platform && dir) {
+        Object.assign(host, { python: [...python, '-I'], platform, dir, home: dir.replace(/\/\.claude\/bash-feed$/, '') })
+        return true
+      }
+    }
+    await $.ui.toast('Bash feed needs Python 3, which was not found.')
+    return false
+  })())
+
+// Runs one bin/feed.py action.
+const feed = async ($: EngineInterface, args: string[], stdin?: string) => {
+  if (!(await setup($))) return { exitCode: 1, stdout: '', stderr: '' }
+  return $.process.run([...host.python, `${$.plugin.root}/bin/feed.py`, ...args], stdin === undefined ? undefined : { stdin })
+}
 const ANSI = { say: '\x1b[3;92m', cmd: '\x1b[1;36m', err: '\x1b[31m', ok: '\x1b[2;32m', bad: '\x1b[1;31m', dim: '\x1b[2m', term: '\x1b[33m', more: '\x1b[4;34m', edit: '\x1b[1;34m', add: '\x1b[32m', del: '\x1b[31m', off: '\x1b[0m' }
 // Which run the log last wrote, so a finished run repeats its header only when another came between.
 let lastLogged = ''
@@ -39,9 +69,10 @@ const LEVELS = {
 
 const teacher = () => `${TEACHER}
 ${LEVELS[settings.teacherLevel === 'intermediate' ? 'intermediate' : 'beginner']}
-Write every meaning, the RISK line and the SAY line in ${settings.language}; keep the parts, RISK and SAY themselves as written.`
+Write every meaning, the RISK line and the SAY line in ${settings.language}; keep the parts, RISK and SAY themselves as written.
+The computer runs ${{ darwin: 'macOS', linux: 'Linux', win32: 'Windows' }[host.platform] ?? 'Unix'}.`
 
-const TEACHER = `You explain shell commands to someone learning the terminal on macOS.
+const TEACHER = `You explain shell commands to someone learning the terminal.
 List the parts of the command that matter: each program, important flags/options, and shell
 characters such as | > >> 2>/dev/null ; && || $() quotes and globs.
 One part per line: the part itself, then " :: ", then a short plain meaning (under 12 words).
@@ -72,7 +103,7 @@ const lessonFor = ($: EngineInterface, command: string): Promise<Lesson> => {
   const known = lessons.get(command)
   if (known) return known
   const asked = $.model
-    .complete({ model: 'haiku', system: teacher(), prompt: command, maxTokens: 400, timeoutMs: 20_000 })
+    .complete({ model: 'haiku', system: teacher(), prompt: command.length > 3000 ? `${command.slice(0, 3000)}\n… (the rest of a long script)` : command, maxTokens: 400, timeoutMs: 20_000 })
     .then(reply => {
       if (!reply.isAnswered) return { terms: [] }
       const parts = reply.text
@@ -118,45 +149,15 @@ const linesOf = (run: BashRun): Line[] => {
   return out
 }
 
-const appendLog = ($: EngineInterface, text: string) =>
-  $.process.run(['/bin/sh', '-c', `mkdir -p "$HOME/.claude/bash-feed" && cat >> "${logFile()}"`], { stdin: text })
+const appendLog = ($: EngineInterface, text: string) => feed($, ['append', logFile()], text)
 
 // Opens the window unless this session's is already open (a reload runs session.start
-// again). `exit` lets the window's shell end once the watcher stops the tail. With
-// `keepFocus`, the window that was in front goes back in front.
-const openWindow = ($: EngineInterface, keepFocus: boolean) => {
-  const title = windowTitle()
-  // The BizonAg banner first, then the log as it grows.
-  const log = logFile().replace('$HOME', '~')
-  const tail = settings.viewer === 'plain'
-    ? `clear; /usr/bin/python3 -I '${$.plugin.root}/bin/banner.py' ${sessionId.slice(0, 8)}; tail -n 300 -F ${log}; exit`
-    : `clear; /usr/bin/python3 -I '${$.plugin.root}/bin/viewer.py' ${log} ${sessionId.slice(0, 8)}; exit`
-  return $.process.run([
-    'osascript',
-    '-e', `tell application "Terminal"
-  repeat with w in (get windows)
-    try
-      if custom title of selected tab of w is "${title}" then return
-    end try
-  end repeat
-  set prevWin to missing value
-  if (count of windows) > 0 then set prevWin to front window
-  set custom title of (do script "${tail}") to "${title}"
-  if ${keepFocus} and prevWin is not missing value then
-    set index of prevWin to 1
-  else
-    activate
-  end if
-end tell`,
-  ]).then(() =>
-    // A detached watcher closes the window once this Claude process exits, so a
-    // reload or /clear never closes it.
-    $.process.run(['/bin/sh', `${$.plugin.root}/bin/close-on-exit.sh`, sessionId, title]),
-  )
-}
+// again). The window's program closes itself when this Claude process exits. With
+// `keepFocus` (macOS), the window that was in front goes back in front.
+const openWindow = ($: EngineInterface, keepFocus: boolean) =>
+  feed($, ['open', logFile(), sessionId.slice(0, 8), windowTitle(), settings.viewer, keepFocus ? '1' : '0'])
 
-
-const home = (path: string) => path.replace(/^\/Users\/[^/]+/, '~')
+const home = (path: string) => (host.home && path.startsWith(host.home) ? `~${path.slice(host.home.length)}` : path)
 
 type Patch = { lines: string[] }[]
 
@@ -172,7 +173,7 @@ const editBlock = async ($: EngineInterface, id: string, n: number, verb: string
   out.push(...shown)
   if (hidden > 0) {
     const file = await saveOutput($, id, changed.join('\n'), rest)
-    out.push(`${ANSI.more}  ▸ ${hidden} more line${hidden === 1 ? '' : 's'} · ⌘-click: file://${encodeURI(file)}${ANSI.off}`)
+    out.push(`${ANSI.more}  ▸ ${hidden} more line${hidden === 1 ? '' : 's'} · ${linkTo(file)}${ANSI.off}`)
   }
   return out.join('\n') + '\n\n'
 }
@@ -182,6 +183,8 @@ const changedLines = (patch: Patch | undefined) =>
 
 const logEdit = async ($: EngineInterface, e: Extract<ToolCallInput, { tool: 'Edit' | 'Write' | 'NotebookEdit' }>, next: (e: ToolCallInput) => Promise<ToolCallResult>) => {
   if (!enabled || !settings.showFileChanges) return next(e)
+  if (!sessionId) sessionId = await $.session.id()
+  if (!(await setup($))) return next(e)
   // The step number is taken when the call starts, as a command's is, so steps log in order.
   const n = ++step
   const ran = await next(e)
@@ -213,17 +216,8 @@ const logEdit = async ($: EngineInterface, e: Extract<ToolCallInput, { tool: 'Ed
   return ran
 }
 
-// Stops this session's tail and closes its window.
-const closeWindow = ($: EngineInterface) =>
-  $.process.run([
-    '/bin/sh', '-c', `pkill -f "[t]ail -n 300 -F .*bash-feed/${sessionId}.log"; sleep 0.2; osascript -e 'tell application "Terminal"
-  repeat with w in (get windows)
-    try
-      if custom title of selected tab of w is "${windowTitle()}" then close w
-    end try
-  end repeat
-end tell'`,
-  ])
+// Stops this session's window program and closes its window.
+const closeWindow = ($: EngineInterface) => feed($, ['close', logFile(), windowTitle()])
 
 // Shell syntax colours for the command line: programs, flags, quoted text, variables and
 // substitutions, operators and keywords, comments, heredoc bodies.
@@ -457,7 +451,7 @@ const lessonLines = async ($: EngineInterface, run: BashRun, lesson: Lesson): Pr
     ...(lesson.say ? ['', `→ ${lesson.say}`] : []),
   ].join('\n')
   const file = await saveOutput($, `${run.id}-explained`, `${text}\n`, wrap(parts, await columns($)))
-  const link = `  ${ANSI.more}▸ ${terms.length} part${terms.length === 1 ? '' : 's'} explained · ⌘-click: file://${encodeURI(file)}${ANSI.off}`
+  const link = `  ${ANSI.more}▸ ${terms.length} part${terms.length === 1 ? '' : 's'} explained · ${linkTo(file)}${ANSI.off}`
   return [...say, link, '']
 }
 
@@ -470,7 +464,7 @@ const headerLines = async ($: EngineInterface, run: BashRun, cols: number): Prom
   const file = await saveOutput($, `${run.id}-command`, `${run.command}\n`, lines.slice(settings.commandLines))
   return [
     ...lines.slice(0, settings.commandLines),
-    `      ${ANSI.more}▸ ${hidden} more line${hidden === 1 ? '' : 's'} of this command · ⌘-click: file://${encodeURI(file)}${ANSI.off}`,
+    `      ${ANSI.more}▸ ${hidden} more line${hidden === 1 ? '' : 's'} of this command · ${linkTo(file)}${ANSI.off}`,
   ]
 }
 
@@ -508,21 +502,13 @@ const settings = {
   viewer: 'interactive' as 'interactive' | 'plain',
 }
 
-// The feed window's width in columns, asked of Terminal at most every 15 seconds.
+// The feed window's width in columns: its program writes it beside the log (.cols) when it
+// starts and when it is resized; read at most every 15 seconds.
 let width = { cols: 100, at: -Infinity }
 const columns = async ($: EngineInterface): Promise<number> => {
   const now = Date.now()
   if (now - width.at < 15_000) return width.cols
-  const asked = await $.process
-    .run(['osascript', '-e', `tell application "Terminal"
-  repeat with w in (get windows)
-    try
-      if custom title of selected tab of w is "${windowTitle()}" then return number of columns of selected tab of w
-    end try
-  end repeat
-end tell`])
-    .catch(() => undefined)
-  const cols = Number(asked?.stdout.trim())
+  const cols = Number(await $.fs.read(`${host.dir}/${sessionId}.cols`).catch(() => ''))
   width = { cols: cols > 20 ? cols : width.cols, at: now }
   return width.cols
 }
@@ -614,12 +600,11 @@ const linesIn = (text: string): string[] => {
 // `shown`, when given, is what the window's viewer expands the link into: the hidden lines,
 // coloured, saved beside it as .ans.
 const saveOutput = async ($: EngineInterface, id: string, text: string, shown?: string[]): Promise<string> => {
-  const saved = await $.process.run(
-    ['/bin/sh', '-c', `d="$HOME/.claude/bash-feed/out" && mkdir -p "$d" && f="$d/${sessionId.slice(0, 8)}-${id}.txt" && cat > "$f" && printf %s "$f"`],
-    { stdin: text },
-  )
-  if (shown) await $.process.run(['/bin/sh', '-c', 'cat > "$0"', saved.stdout.replace(/\.txt$/, '.ans')], { stdin: `${shown.join('\n')}\n` })
-  return saved.stdout
+  await setup($)
+  const file = `${host.dir}/out/${sessionId.slice(0, 8)}-${id}`
+  await $.fs.write(`${file}.txt`, text)
+  if (shown) await $.fs.write(`${file}.ans`, `${shown.join('\n')}\n`)
+  return `${file}.txt`
 }
 
 const logBlock = async ($: EngineInterface, run: BashRun, risk?: string): Promise<string> => {
@@ -635,7 +620,7 @@ const logBlock = async ($: EngineInterface, run: BashRun, risk?: string): Promis
   out.push(...shown)
   if (hidden > 0) {
     const file = await saveOutput($, run.id, [run.stdout, run.stderr].filter(text => text.trim()).join('\n'), rest)
-    out.push(`${ANSI.more}  ▸ ${hidden} more line${hidden === 1 ? '' : 's'} · ⌘-click: file://${encodeURI(file)}${ANSI.off}`)
+    out.push(`${ANSI.more}  ▸ ${hidden} more line${hidden === 1 ? '' : 's'} · ${linkTo(file)}${ANSI.off}`)
   }
   if (run.note) out.push(...wrap([`${ANSI.bad}  ✗ ${run.note}${ANSI.off}`], cols))
   else if (!settings.showStatus) {
@@ -647,20 +632,10 @@ const logBlock = async ($: EngineInterface, run: BashRun, risk?: string): Promis
   return out.join('\n') + '\n\n'
 }
 
-// Shell snippet: the feed folder's size, as du prints it (e.g. 5.1M).
-const SIZE = `du -sh "$HOME/.claude/bash-feed" 2>/dev/null | cut -f1`
-
 const clearLogs = async ($: EngineInterface, all: boolean) => {
-  const keep = sessionId.slice(0, 8)
   // Other sessions' logs and outputs go; this session's log is emptied, not deleted,
   // so its open window keeps following it.
-  const script = `d="$HOME/.claude/bash-feed"; [ -d "$d" ] || exit 0
-before=$(${SIZE})
-find "$d" -maxdepth 1 -type f -name '*.log' ! -name '${sessionId}.log' -delete
-find "$d/out" -type f \( -name '*.txt' -o -name '*.ans' \) ! -name '${keep}-*' -delete 2>/dev/null
-${all ? `: > "$d/${sessionId}.log"; rm -f "$d/out/${keep}-"*.txt "$d/out/${keep}-"*.ans` : ''}
-echo "$before $(${SIZE})"`
-  const ran = await queue.then(() => $.process.run(['/bin/sh', '-c', script]))
+  const ran = await queue.then(() => feed($, ['delete', host.dir, sessionId, all ? 'all' : 'others']))
   const [before = '?', after = '?'] = ran.stdout.trim().split(/\s+/)
   if (all) {
     lastLogged = ''
@@ -813,21 +788,15 @@ export const register: Register = (on, options) => {
     })
     sessionId = await $.session.id()
     enabled = (await $.store.get('enabled')) !== false
+    if (!(await setup($))) return next(e)
     // Step numbers carry on from the highest already in this session's log.
-    const last = await $.process.run(['/bin/sh', '-c', `grep -ao '§[0-9]*' "${logFile()}" 2>/dev/null | tr -d '§' | sort -n | tail -1`])
-    step = Number(last.stdout.trim()) || 0
+    step = Number((await feed($, ['last-step', logFile()])).stdout.trim()) || 0
     // Session logs and saved outputs older than the retention setting are deleted (0 keeps all).
-    if (retentionDays > 0) {
-      enqueue(() =>
-        $.process.run(['/bin/sh', '-c', `[ -d "$HOME/.claude/bash-feed" ] && find "$HOME/.claude/bash-feed" -type f \( -name '*.log' -o -name '*.txt' -o -name '*.ans' \) -mtime +${retentionDays} -delete`]),
-      )
-    }
+    if (retentionDays > 0) enqueue(() => feed($, ['clean', host.dir, String(retentionDays)]))
     if (e.isInteractive && enabled && settings.openOnStart) {
       enqueue(async () => {
         // The header goes in once per session file, not again on each reload.
-        await $.process.run(['/bin/sh', '-c', `[ -e "${logFile()}" ] || { mkdir -p "$HOME/.claude/bash-feed" && cat > "${logFile()}"; }`], {
-          stdin: `${ANSI.dim}── session ${sessionId.slice(0, 8)} · ${new Date().toLocaleString()} ──${ANSI.off}\n\n`,
-        })
+        await feed($, ['init', logFile()], `${ANSI.dim}── session ${sessionId.slice(0, 8)} · ${new Date().toLocaleString()} ──${ANSI.off}\n\n`)
         await openWindow($, true)
       })
     }
@@ -837,11 +806,12 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'bash-feed' }, async ($, e) => {
     if (!sessionId) sessionId = await $.session.id()
+    if (!(await setup($))) return { text: 'The Bash feed needs Python 3, which was not found.' }
     let choice = e.args.trim().toLowerCase()
     if (!choice) {
       // No argument: a menu, like /permissions.
       const options = enabled ? [MENU.off, MENU.window, MENU.settings, MENU.delete] : [MENU.on, MENU.settings, MENU.delete]
-      const size = (await $.process.run(['/bin/sh', '-c', SIZE])).stdout.trim() || '0B'
+      const size = (await feed($, ['size', host.dir])).stdout.trim() || '0B'
       const picked = await $.ui
         .ask(`The Bash feed is ${enabled ? 'on' : 'off'} (logs use ${size}). What do you want to do?`, { header: 'Bash feed', options })
         .catch(() => '')
@@ -902,6 +872,7 @@ export const register: Register = (on, options) => {
     const description = e.tool === 'Bash' || e.tool === 'Monitor' ? e.description?.trim() : undefined
     const id = e.tool_use_id
     if (!sessionId) sessionId = await $.session.id()
+    if (!(await setup($))) return next(e)
     const tags = [e.tool === 'Monitor' && 'monitor', e.agentId && 'subagent'].filter(Boolean)
     const run: BashRun = { id, n: ++step, command, isDone: false, stdout: '', stderr: '', ...(tags.length ? { from: tags.join(', ') } : {}) }
     await update($, runs, list => [...list, run].slice(-MAX_RUNS))
@@ -950,7 +921,7 @@ export const register: Register = (on, options) => {
       if (taskId && settings.showBackground) {
         const short = command.replace(/\s+/g, ' ')
         const label = `${short.length > 50 ? `${short.slice(0, 50)}…` : short} (task ${taskId})`
-        await $.process.run(['/bin/sh', `${$.plugin.root}/bin/tail-task.sh`, sessionId, taskId, label, String(await columns($))])
+        await feed($, ['task', logFile(), taskId, label, String(await columns($))])
       }
     })
 

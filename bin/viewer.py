@@ -1,7 +1,11 @@
 """The feed window's interactive viewer: follows a session's log like `tail -F`, and lets you
 move around it.
 
-Usage: viewer.py <log-file> <short-session-id>
+Usage: viewer.py <log-file> <short-session-id> [--pid <claude-pid>] [--title <title>] [--plain]
+
+With --plain it only prints the log as it grows, like `tail -F`. Either way it closes when
+the Claude process <claude-pid> exits, writes its own pid beside the log (<log>.window, for
+/bash-feed close) and its width (<log>.cols, which the mod wraps lines to).
 
   ↑ / ↓          previous / next step (§n); ↓ past the last goes back to live
   click, Enter   expand or collapse a ▸ line in place (Enter: every ▸ in the current step)
@@ -12,12 +16,24 @@ Usage: viewer.py <log-file> <short-session-id>
 A ▸ line links a saved file. Expanding shows the `.ans` file beside it (the hidden lines,
 coloured, as the mod wrote them) or, without one, the `.txt` file itself.
 """
-import os, re, select, signal, subprocess, sys, termios, tty, unicodedata
+import os, re, signal, subprocess, sys, time, unicodedata
 from urllib.parse import unquote
 
-LOG = sys.argv[1]
-SESSION = sys.argv[2] if len(sys.argv) > 2 else ''
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from common import WINDOWS, alive, enable_vt, restore_input  # noqa: E402
+
+
+def flag(name, default=''):
+    return sys.argv[sys.argv.index(name) + 1] if name in sys.argv[:-1] else default
+
+
+LOG = sys.argv[1] if len(sys.argv) > 1 else ''
+SESSION = sys.argv[2] if len(sys.argv) > 2 else ''
+CLAUDE = int(flag('--pid', '0') or 0)
+TITLE = flag('--title', 'Bash feed')
+PLAIN = '--plain' in sys.argv
+BASE = LOG[:-4] if LOG.endswith('.log') else LOG
 
 SGR = re.compile(r'\x1b\[[0-9;]*m')
 # Escape codes other than colours (cursor moves, clears) are dropped from log lines.
@@ -25,7 +41,7 @@ OTHER_CSI = re.compile(r'\x1b\[[0-9;?]*[A-Za-ln-z]')
 CLEAR = '\x1b[2J'
 LINK = re.compile(r'file://(\S+?)\.txt')
 # The path part of a ▸ line, hidden on screen: the viewer opens the file itself.
-LINK_TAIL = re.compile(r'\s*·\s*⌘-click:(?:\x1b\[[0-9;]*m|\s)*(?:file://\S+)?')
+LINK_TAIL = re.compile(r'\s*·\s*(?:⌘|ctrl)-click:(?:\x1b\[[0-9;]*m|\s)*(?:file://\S+)?')
 STEP = re.compile(r'^§\d+ ')
 MOUSE = re.compile(r'\x1b\[<(\d+);(\d+);(\d+)([Mm])')
 OFF = '\x1b[0m'
@@ -193,7 +209,7 @@ class Feed:
 
     def banner(self):
         try:
-            out = subprocess.run(['/usr/bin/python3', '-I', os.path.join(HERE, 'banner.py'), SESSION, 'interactive'],
+            out = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'banner.py'), SESSION, 'plain' if PLAIN else 'interactive'],
                                  capture_output=True, text=True, timeout=5).stdout
             return out.split('\n')
         except Exception:
@@ -319,6 +335,8 @@ class Feed:
             del self.expanded[index]
         else:
             base = unquote(match.group(1))
+            if re.match(r'/[A-Za-z]:', base):
+                base = base[1:]  # file:///C:/… on Windows
             try:
                 if os.path.exists(base + '.ans'):
                     extra = open(base + '.ans', errors='replace').read().rstrip('\n').split('\n')
@@ -354,7 +372,7 @@ class Feed:
     # Drawing ----------------------------------------------------------------------
 
     def status(self):
-        keys = [('↑↓', 'steps'), ('click ▸', 'expand'), ('wheel/PgUp/PgDn', 'scroll'), ('End', 'live'), ('⌥drag', 'select')]
+        keys = [('↑↓', 'steps'), ('click ▸', 'expand'), ('wheel/PgUp/PgDn', 'scroll'), ('End', 'live'), ('⌥drag' if sys.platform == 'darwin' else '⇧drag', 'select')]
         left = '  '.join(f'{BAR_KEY}{k}{BAR_FG} {v}' for k, v in keys)
         right = 'LIVE' if self.live else (f'paused · {self.unseen} new' if self.unseen else 'paused')
         plain_left = '  '.join(f'{k} {v}' for k, v in keys)
@@ -378,40 +396,157 @@ class Feed:
         self.dirty = False
 
 
+class Keys:
+    """Raw keys and mouse codes from the terminal, on Unix or in a Windows console."""
+
+    def __init__(self):
+        if WINDOWS:
+            import msvcrt
+            self.msvcrt, self.saved = msvcrt, enable_vt()
+        else:
+            import termios, tty
+            self.fd = sys.stdin.fileno()
+            self.saved = termios.tcgetattr(self.fd)
+            tty.setraw(self.fd)
+
+    def read(self, timeout):
+        """What was typed, waiting up to `timeout` seconds for the first of it."""
+        if WINDOWS:
+            end = time.time() + timeout
+            while not self.msvcrt.kbhit():
+                if time.time() >= end:
+                    return ''
+                time.sleep(0.02)
+            chars = []
+            while self.msvcrt.kbhit():
+                chars.append(self.msvcrt.getwch())
+            return ''.join(chars)
+        import select
+        if not select.select([self.fd], [], [], timeout)[0]:
+            return ''
+        return os.read(self.fd, 4096).decode('utf-8', errors='replace')
+
+    def restore(self):
+        if WINDOWS:
+            restore_input(self.saved)
+        else:
+            import termios
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+
+
+def write_file(path, text):
+    try:
+        with open(path, 'w') as f:
+            f.write(text)
+    except OSError:
+        pass
+
+
+def remove_file(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def close_mac_window():
+    """Terminal may keep a finished window open, depending on its profile: a moment after
+    this exits, it is closed by its title."""
+    if sys.platform != 'darwin':
+        return
+    script = ('on run argv\ntell application "Terminal"\nrepeat with w in (get windows)\ntry\n'
+              'if custom title of selected tab of w is (item 1 of argv) then close w\nend try\n'
+              'end repeat\nend tell\nend run')
+    subprocess.Popen(['/bin/sh', '-c', 'sleep 0.4; osascript -e "$0" "$1"', script, TITLE],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def follow_plain(out):
+    """--plain: the banner, then the log as it grows."""
+    feed = Feed()
+    out.write('\x1b[2J\x1b[H' + '\n'.join(feed.banner()))
+    offset, checked = 0, 0
+    while True:
+        if time.time() - checked > 1:
+            checked = time.time()
+            if CLAUDE and not alive(CLAUDE):
+                return
+            write_file(BASE + '.cols', str(os.get_terminal_size(out.fileno()).columns))
+        try:
+            size = os.path.getsize(LOG)
+        except OSError:
+            size = 0
+        if size < offset:
+            offset = 0
+        if size > offset:
+            with open(LOG, 'rb') as f:
+                f.seek(offset)
+                chunk = f.read()
+            offset += len(chunk)
+            out.write(chunk.decode('utf-8', errors='replace'))
+            out.flush()
+        time.sleep(0.25)
+
+
 def main():
+    out = sys.stdout
+    if WINDOWS:
+        enable_vt()
+        out.reconfigure(encoding='utf-8')
+    out.write(f'\x1b]0;{TITLE}\x07')
+    write_file(BASE + '.window', str(os.getpid()))
+
+    def finish(*_):
+        remove_file(BASE + '.window')
+        close_mac_window()
+        os._exit(0)
+
+    for name in ('SIGTERM', 'SIGHUP'):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), finish)
+    if PLAIN:
+        try:
+            follow_plain(out)
+        except (KeyboardInterrupt, Exception):
+            pass
+        finish()
+
     feed = Feed()
     feed.reset()
-    fd = sys.stdin.fileno()
-    saved = termios.tcgetattr(fd)
-    out = sys.stdout
-    state = {'resized': True}
+    keys = Keys()
+    state = {'size': None, 'checked': 0.0}
 
     def restore(*_):
         out.write('\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l')
         out.flush()
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        sys.exit(0)
+        keys.restore()
+        finish()
 
-    signal.signal(signal.SIGTERM, restore)
-    signal.signal(signal.SIGHUP, restore)
-    signal.signal(signal.SIGWINCH, lambda *_: state.update(resized=True))
-    tty.setraw(fd)
+    for name in ('SIGTERM', 'SIGHUP'):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), restore)
     out.write('\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h')
     pending = ''
     try:
         while True:
-            if state['resized']:
-                size = os.get_terminal_size(out.fileno())
+            size = os.get_terminal_size(out.fileno())
+            if size != state['size']:
+                state['size'] = size
                 feed.cols, feed.height = max(20, size.columns), max(3, size.lines - 1)
-                feed.cache, feed.dirty, state['resized'] = {}, True, False
+                feed.cache, feed.dirty = {}, True
                 out.write('\x1b[2J')
+                write_file(BASE + '.cols', str(feed.cols))
+            if time.time() - state['checked'] > 1:
+                state['checked'] = time.time()
+                if CLAUDE and not alive(CLAUDE):
+                    restore()
             feed.poll()
             if feed.dirty:
                 feed.draw(out)
-            ready, _, _ = select.select([fd], [], [], 0.25)
-            if not ready:
+            got = keys.read(0.25)
+            if not got:
                 continue
-            pending += os.read(fd, 4096).decode('utf-8', errors='replace')
+            pending += got
             while pending:
                 mouse = MOUSE.match(pending)
                 if mouse:
@@ -437,14 +572,19 @@ def main():
                         break
                 else:
                     if pending.startswith('\x1b') and len(pending) < 6 and not pending.endswith(('~', 'M', 'm')):
-                        # The rest of an escape sequence has not arrived yet.
-                        if not select.select([fd], [], [], 0.05)[0]:
-                            pending = ''
+                        # The rest of an escape sequence may still be on its way.
+                        more = keys.read(0.05)
+                        if more:
+                            pending += more
+                            continue
+                        pending = ''
                         break
                     key, pending = pending[0], pending[1:]
                     if key == '\x1b':
                         # An unknown sequence: drop it whole.
                         pending = re.sub(r'^\[[0-9;<]*[A-Za-z~]', '', pending)
+                    elif key == '\x03':
+                        restore()
                     elif key in ('\r', '\n'):
                         feed.toggle_step()
                     elif key == 'k':

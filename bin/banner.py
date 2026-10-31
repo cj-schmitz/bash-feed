@@ -36,7 +36,11 @@ def bg(rgb):
 
 
 session = sys.argv[1] if len(sys.argv) > 1 else ''
-interactive = 'interactive' in sys.argv[2:]
+interactive = 'plain' not in sys.argv[2:]
+MAC = sys.platform == 'darwin'
+JUMP = '⌘F, type § (⌥6), Enter, then ⌘G / ⇧⌘G' if MAC else "your terminal's Find: search for §"
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
 out = ['']
 for row in BISON:
     out.append('  ' + ''.join(f'{bg(PIXEL[ch])}  {OFF}' if ch in PIXEL else '  ' for ch in row))
@@ -50,8 +54,12 @@ out += [
     f'  {fg(CREAM)}⚠  ✎  ┆{OFF}     {fg(MUTED)}risks · file changes · background output{OFF}',
     '',
     (f'  {fg(LIGHT)}Move{OFF}        {fg(MUTED)}↑ ↓ steps · click ▸ to expand · End back to live{OFF}' if interactive else
-     f'  {fg(LIGHT)}Jump{OFF}        {fg(MUTED)}⌘F, type § (⌥6), Enter, then ⌘G / ⇧⌘G{OFF}'),
-    f'  {fg(LIGHT)}Menu{OFF}        {fg(MUTED)}/bash-feed{OFF}      {fg(LIGHT)}Settings{OFF}   {fg(MUTED)}/config{OFF}',
+     f'  {fg(LIGHT)}Jump{OFF}        {fg(MUTED)}{JUMP}{OFF}'),
+    f'  {fg(LIGHT)}Menu{OFF}        {fg(MUTED)}/bash-feed{OFF}      {fg(LIGHT)}Settings{OFF}   {fg(MUTED)}/bash-feed settings{OFF}',
+    '',
+    f'  {fg(LIGHT)}Tokens{OFF}      {fg(MUTED)}Explanations use Claude Haiku: about 600–1,600 tokens{OFF}',
+    f'              {fg(MUTED)}per new command (repeats are free). Turn them off in{OFF}',
+    f'              {fg(MUTED)}/bash-feed settings → Explanations → Off.{OFF}',
     f'  {fg(BRAND)}{"─" * 40} session {session} ──{OFF}',
     '',
 ]

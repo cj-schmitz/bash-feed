@@ -1,7 +1,7 @@
 {
   "name": "bash-feed",
   "version": "0.1.0",
-  "description": "Streams each Bash command Claude runs, with color-coded output and short explanations, to a per-session Terminal window",
+  "description": "Streams each shell command Claude runs, with color-coded output and short explanations, to a per-session terminal window (macOS, Linux, Windows)",
   "types": "./types/index.d.ts",
   "userConfig": {
     "teacherLevel": {
@@ -24,7 +24,7 @@
     "explainer": {
       "type": "string",
       "title": "Explanation layout",
-      "description": "collapsed: show the warning and the plain-English line, with the part-by-part explanation behind a ⌘-click link. expanded: show every part in the window.",
+      "description": "collapsed: show the warning and the plain-English line, with the part-by-part explanation behind a link. expanded: show every part in the window.",
       "options": [
         "collapsed",
         "expanded"

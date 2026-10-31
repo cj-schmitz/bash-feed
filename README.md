@@ -42,7 +42,19 @@ A Claude Code mod that shows every Bash command Claude runs, with its output, in
 
 Logs and saved outputs live in `~/.claude/bash-feed/`.
 
-macOS and Terminal.app only. The first time, macOS may ask to let Claude Code control Terminal.
+## Systems
+
+Needs Python 3 (`python3`, or `py` on Windows).
+
+- **macOS:** opens in Terminal.app. The first time, macOS may ask to let Claude Code control Terminal. Tested.
+- **Linux:** opens in `$TERMINAL` if set, else the first found of x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal, kitty, alacritty, wezterm, foot, tilix, xterm. Not yet tested.
+- **Windows:** opens in Windows Terminal (`wt`), else a new console window. Not yet tested.
+
+The window's program closes itself when the Claude session that opened it exits.
+
+## Tokens
+
+Explanations are written by Claude Haiku: about 600–1,600 tokens per new command (about 400 of instructions, the command itself, cut at 3,000 characters, and a reply of at most 400). A repeated command in the same session is not explained again. Explanations → Off, or turning off the snippet explainers, plain-English line and risk warnings, stops the calls.
 
 ## Install
 

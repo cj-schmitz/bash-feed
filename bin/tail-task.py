@@ -4,8 +4,11 @@ Usage: tail-task.py <task-id> <log-file> <label> <claude-pid> <window-columns>
 The task's file ends with "[exited with code N]" or "[killed]"; the watch also stops
 when the Claude process exits, or after six hours.
 """
-import glob, os, re, shutil, sys, textwrap, time
+import glob, os, re, shutil, sys, tempfile, textwrap, time
 from urllib.parse import quote
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import alive as is_alive  # noqa: E402
 
 task, log, label, pid, cols = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), max(20, int(sys.argv[5]))
 DIM, BAR, BAD, MORE, OFF = '\x1b[2m', '\x1b[35m', '\x1b[1;31m', '\x1b[4;34m', '\x1b[0m'
@@ -16,18 +19,15 @@ END = re.compile(r'^\[(?:exited with code (-?\d+)|(killed))\]$')
 
 
 def alive():
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    return is_alive(pid)
 
 
-# The engine creates the file under /private/tmp/claude-<uid>/<project>/<session>/tasks/.
-root = f'/private/tmp/claude-{os.getuid()}'
+# The engine creates the file under <temp>/claude-<uid>/<project>/<session>/tasks/ (macOS:
+# /private/tmp); where the temp folder is differs by system.
+roots = {tempfile.gettempdir(), '/tmp', '/private/tmp', os.environ.get('CLAUDE_CODE_TMPDIR', '')} - {''}
 path, began = None, time.time()
 while path is None and time.time() - began < 60:
-    hits = glob.glob(f'{root}/*/*/tasks/{task}.output')
+    hits = [hit for root in roots for hit in glob.glob(os.path.join(root, 'claude*', '**', 'tasks', f'{task}.output'), recursive=True)]
     if hits:
         path = hits[0]
     else:
@@ -95,7 +95,8 @@ while time.time() < deadline:
             saved = os.path.join(saved_dir, f'{os.path.basename(log)[:8]}-{task}.txt')
             shutil.copyfile(path, saved)
             hidden = shown - hidden_from + 1
-            out.append(f'{MORE}  ▸ {hidden} more line{"" if hidden == 1 else "s"} · ⌘-click: file://{quote(saved)}{OFF}\n')
+            url = quote(saved.replace(os.sep, '/'))
+            out.append(f'{MORE}  ▸ {hidden} more line{"" if hidden == 1 else "s"} · ⌘-click: file://{"" if url.startswith("/") else "/"}{url}{OFF}\n')
     if end:
         code = end.group(1)
         if code == '0':
