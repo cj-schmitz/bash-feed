@@ -752,6 +752,71 @@ const clearWindow = ($: EngineInterface) =>
     await appendLog($, `\x1b[H\x1b[2J\x1b[3J${ANSI.dim}── cleared · ${new Date().toLocaleTimeString()} ──${ANSI.off}\n\n`)
   })
 
+// Logs one shell command or file edit around the call itself.
+const logCall = async ($: EngineInterface, e: ToolCallInput, next: (e: ToolCallInput) => Promise<ToolCallResult>): Promise<ToolCallResult> => {
+  if (!enabled) return next(e)
+  if (e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') return logEdit($, e, next)
+  const command = e.tool === 'Bash' ? e.command : e.tool === 'Monitor' ? e.command : undefined
+  if (!command) return next(e)
+  const description = e.tool === 'Bash' || e.tool === 'Monitor' ? e.description?.trim() : undefined
+  const id = e.tool_use_id
+  if (!sessionId) sessionId = await $.session.id()
+  if (!(await setup($))) return next(e)
+  const tags = [e.tool === 'Monitor' && 'monitor', e.agentId && 'subagent'].filter(Boolean)
+  const run: BashRun = { id, n: ++step, command, isDone: false, stdout: '', stderr: '', ...(tags.length ? { from: tags.join(', ') } : {}) }
+  await update($, runs, list => [...list, run].slice(-MAX_RUNS))
+  const lesson = lessonFor($, run.command)
+  enqueue(async () => {
+    const lines = await lessonLines($, run, await lesson)
+    lastLogged = id
+    // Claude's own one-line reason for the command, written as a shell comment.
+    const why = description && settings.showWhy ? [`${ANSI.dim}# ${description}${ANSI.off}`] : []
+    const cols = await columns($)
+    await appendLog($, [...wrap(why, cols), ...(await headerLines($, run, cols)), ...wrap(lines, cols), ''].join('\n'))
+  })
+
+  const ran = await next(e)
+
+  let done: Partial<BashRun>
+  let taskId: string | undefined
+  if (ran.deny !== undefined) {
+    done = { note: `blocked: ${ran.deny}` }
+  } else if (ran.isError === true) {
+    // Non-zero exits come back as errors; the model's text holds the code and output.
+    const text = ran.text ?? ''
+    const code = /Exit code (\d+)/.exec(text)
+    done = code
+      ? { exitCode: Number(code[1]), stderr: text.replace(/^Exit code \d+\n?/, '') }
+      : { note: text.split('\n')[0] || 'failed', stderr: text.split('\n').slice(1).join('\n') }
+  } else {
+    const result = (ran.result ?? {}) as { stdout?: string; stderr?: string; interrupted?: boolean; taskId?: string; backgroundTaskId?: string }
+    taskId = result.taskId ?? result.backgroundTaskId
+    done = {
+      // A backgrounded command's output so far is also in its task file, streamed below.
+      stdout: taskId ? `running in the background (task ${taskId})` : result.stdout ?? '',
+      stderr: result.stderr ?? '',
+      ...(result.interrupted ? { note: 'interrupted' } : { exitCode: 0 }),
+    }
+  }
+  await update($, runs, list =>
+    list.map(one => (one.id === id ? { ...one, ...done, isDone: true } : one)),
+  )
+  enqueue(async () => {
+    const block = await logBlock($, { ...run, ...done, isDone: true }, (await lesson).risk)
+    lastLogged = id
+    await appendLog($, block)
+    // A background command or monitor keeps writing after the call returns: a detached
+    // watcher streams its task file into the log until it ends.
+    if (taskId && settings.showBackground) {
+      const short = command.replace(/\s+/g, ' ')
+      const label = `${short.length > 50 ? `${short.slice(0, 50)}…` : short} (task ${taskId})`
+      await feed($, ['task', logFile(), taskId, label, String(await columns($))])
+    }
+  })
+
+  return ran
+}
+
 export const register: Register = (on, options) => {
   const flag = (key: keyof typeof settings, fallback: boolean) => (typeof options[key] === 'boolean' ? (options[key] as boolean) : fallback)
   const count = (key: string, fallback: number, min: number) => {
@@ -865,67 +930,10 @@ export const register: Register = (on, options) => {
   // Every shell command Claude sends: Bash calls and Monitor watches, from the main
   // loop and from subagents alike.
   on('tool.call', async ($, e, next) => {
-    if (!enabled) return next(e)
-    if (e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') return logEdit($, e, next)
-    const command = e.tool === 'Bash' ? e.command : e.tool === 'Monitor' ? e.command : undefined
-    if (!command) return next(e)
-    const description = e.tool === 'Bash' || e.tool === 'Monitor' ? e.description?.trim() : undefined
-    const id = e.tool_use_id
-    if (!sessionId) sessionId = await $.session.id()
-    if (!(await setup($))) return next(e)
-    const tags = [e.tool === 'Monitor' && 'monitor', e.agentId && 'subagent'].filter(Boolean)
-    const run: BashRun = { id, n: ++step, command, isDone: false, stdout: '', stderr: '', ...(tags.length ? { from: tags.join(', ') } : {}) }
-    await update($, runs, list => [...list, run].slice(-MAX_RUNS))
-    const lesson = lessonFor($, run.command)
-    enqueue(async () => {
-      const lines = await lessonLines($, run, await lesson)
-      lastLogged = id
-      // Claude's own one-line reason for the command, written as a shell comment.
-      const why = description && settings.showWhy ? [`${ANSI.dim}# ${description}${ANSI.off}`] : []
-      const cols = await columns($)
-      await appendLog($, [...wrap(why, cols), ...(await headerLines($, run, cols)), ...wrap(lines, cols), ''].join('\n'))
-    })
-
-    const ran = await next(e)
-
-    let done: Partial<BashRun>
-    let taskId: string | undefined
-    if (ran.deny !== undefined) {
-      done = { note: `blocked: ${ran.deny}` }
-    } else if (ran.isError === true) {
-      // Non-zero exits come back as errors; the model's text holds the code and output.
-      const text = ran.text ?? ''
-      const code = /Exit code (\d+)/.exec(text)
-      done = code
-        ? { exitCode: Number(code[1]), stderr: text.replace(/^Exit code \d+\n?/, '') }
-        : { note: text.split('\n')[0] || 'failed', stderr: text.split('\n').slice(1).join('\n') }
-    } else {
-      const result = (ran.result ?? {}) as { stdout?: string; stderr?: string; interrupted?: boolean; taskId?: string; backgroundTaskId?: string }
-      taskId = result.taskId ?? result.backgroundTaskId
-      done = {
-        // A backgrounded command's output so far is also in its task file, streamed below.
-        stdout: taskId ? `running in the background (task ${taskId})` : result.stdout ?? '',
-        stderr: result.stderr ?? '',
-        ...(result.interrupted ? { note: 'interrupted' } : { exitCode: 0 }),
-      }
-    }
-    await update($, runs, list =>
-      list.map(one => (one.id === id ? { ...one, ...done, isDone: true } : one)),
-    )
-    enqueue(async () => {
-      const block = await logBlock($, { ...run, ...done, isDone: true }, (await lesson).risk)
-      lastLogged = id
-      await appendLog($, block)
-      // A background command or monitor keeps writing after the call returns: a detached
-      // watcher streams its task file into the log until it ends.
-      if (taskId && settings.showBackground) {
-        const short = command.replace(/\s+/g, ' ')
-        const label = `${short.length > 50 ? `${short.slice(0, 50)}…` : short} (task ${taskId})`
-        await feed($, ['task', logFile(), taskId, label, String(await columns($))])
-      }
-    })
-
-    return ran
+    // A fault in the feed never stops Claude's command: the call runs once, logged or not.
+    let ran: Promise<ToolCallResult> | undefined
+    const once = (input: ToolCallInput) => (ran ??= next(input))
+    return logCall($, e, once).catch(() => ran ?? next(e))
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

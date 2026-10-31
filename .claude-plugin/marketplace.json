@@ -1,5 +1,13 @@
 {
   "name": "bash-feed",
-  "owner": { "name": "cj-schmitz" },
-  "plugins": [{ "name": "bash-feed", "source": "./" }]
+  "description": "bash-feed: watch every shell command Claude runs, explained in plain English, in a window beside Claude.",
+  "owner": {
+    "name": "cj-schmitz"
+  },
+  "plugins": [
+    {
+      "name": "bash-feed",
+      "source": "./"
+    }
+  ]
 }
