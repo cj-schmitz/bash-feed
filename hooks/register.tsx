@@ -652,39 +652,39 @@ const clearLogs = async ($: EngineInterface, all: boolean) => {
 const setOption = async ($: EngineInterface, field: string, value: string | number | boolean): Promise<string | undefined> => {
   switch (field) {
     case 'teacherLevel':
-      return (await $.config.set({ key: 'bash-feed.teacherLevel', value })).deny
+      return (await $.config.set({ key: 'bash-feed.teacherLevel', value: value })).deny
     case 'language':
-      return (await $.config.set({ key: 'bash-feed.language', value })).deny
+      return (await $.config.set({ key: 'bash-feed.language', value: value })).deny
     case 'explainer':
-      return (await $.config.set({ key: 'bash-feed.explainer', value })).deny
+      return (await $.config.set({ key: 'bash-feed.explainer', value: value })).deny
     case 'showWhy':
-      return (await $.config.set({ key: 'bash-feed.showWhy', value })).deny
+      return (await $.config.set({ key: 'bash-feed.showWhy', value: value })).deny
     case 'showSummary':
-      return (await $.config.set({ key: 'bash-feed.showSummary', value })).deny
+      return (await $.config.set({ key: 'bash-feed.showSummary', value: value })).deny
     case 'showRisk':
-      return (await $.config.set({ key: 'bash-feed.showRisk', value })).deny
+      return (await $.config.set({ key: 'bash-feed.showRisk', value: value })).deny
     case 'showFileChanges':
-      return (await $.config.set({ key: 'bash-feed.showFileChanges', value })).deny
+      return (await $.config.set({ key: 'bash-feed.showFileChanges', value: value })).deny
     case 'showParts':
-      return (await $.config.set({ key: 'bash-feed.showParts', value })).deny
+      return (await $.config.set({ key: 'bash-feed.showParts', value: value })).deny
     case 'showOutput':
-      return (await $.config.set({ key: 'bash-feed.showOutput', value })).deny
+      return (await $.config.set({ key: 'bash-feed.showOutput', value: value })).deny
     case 'showStatus':
-      return (await $.config.set({ key: 'bash-feed.showStatus', value })).deny
+      return (await $.config.set({ key: 'bash-feed.showStatus', value: value })).deny
     case 'showBackground':
-      return (await $.config.set({ key: 'bash-feed.showBackground', value })).deny
+      return (await $.config.set({ key: 'bash-feed.showBackground', value: value })).deny
     case 'viewer':
-      return (await $.config.set({ key: 'bash-feed.viewer', value })).deny
+      return (await $.config.set({ key: 'bash-feed.viewer', value: value })).deny
     case 'commandLines':
-      return (await $.config.set({ key: 'bash-feed.commandLines', value })).deny
+      return (await $.config.set({ key: 'bash-feed.commandLines', value: value })).deny
     case 'outputRows':
-      return (await $.config.set({ key: 'bash-feed.outputRows', value })).deny
+      return (await $.config.set({ key: 'bash-feed.outputRows', value: value })).deny
     case 'diffRows':
-      return (await $.config.set({ key: 'bash-feed.diffRows', value })).deny
+      return (await $.config.set({ key: 'bash-feed.diffRows', value: value })).deny
     case 'openOnStart':
-      return (await $.config.set({ key: 'bash-feed.openOnStart', value })).deny
+      return (await $.config.set({ key: 'bash-feed.openOnStart', value: value })).deny
     case 'retentionDays':
-      return (await $.config.set({ key: 'bash-feed.retentionDays', value })).deny
+      return (await $.config.set({ key: 'bash-feed.retentionDays', value: value })).deny
     default:
       return `the ${field} setting was not found`
   }
