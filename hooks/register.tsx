@@ -440,15 +440,14 @@ const formatCommand = (command: string, indent: string, cols: number): string =>
   return out
 }
 
-// A lesson as the window shows it: the warning first, then the parts (or, collapsed, a link to
+// A lesson as the window shows it (its ⚠ warning goes under the output, in logBlock): the parts (or, collapsed, a link to
 // them), then the plain-English line; a blank line keeps it apart from the output below.
 const lessonLines = async ($: EngineInterface, run: BashRun, lesson: Lesson): Promise<string[]> => {
-  const risk = lesson.risk && settings.showRisk ? [`  ${ANSI.bad}⚠ ${lesson.risk}${ANSI.off}`] : []
   const say = lesson.say && settings.showSummary ? [`  ${ANSI.say}→ ${lesson.say}${ANSI.off}`] : []
   const terms = settings.showParts ? lesson.terms : []
-  if (terms.length === 0) return [...risk, ...say, ...(risk.length || say.length ? [''] : [])]
+  if (terms.length === 0) return [...say, ...(say.length ? [''] : [])]
   const parts = terms.map(([part, meaning]) => `  ${ANSI.term}${part.padEnd(14)}${ANSI.off} ${ANSI.dim}${meaning}${ANSI.off}`)
-  if (settings.explainer === 'expanded') return [...risk, ...parts, ...say, '']
+  if (settings.explainer === 'expanded') return [...parts, ...say, '']
   const width = Math.min(24, Math.max(...terms.map(([part]) => [...part].length)) + 2)
   const text = [
     `$ ${run.command}`,
@@ -459,7 +458,7 @@ const lessonLines = async ($: EngineInterface, run: BashRun, lesson: Lesson): Pr
   ].join('\n')
   const file = await saveOutput($, `${run.id}-explained`, `${text}\n`, wrap(parts, await columns($)))
   const link = `  ${ANSI.more}▸ ${terms.length} part${terms.length === 1 ? '' : 's'} explained · ⌘-click: file://${encodeURI(file)}${ANSI.off}`
-  return [...risk, ...say, link, '']
+  return [...say, link, '']
 }
 
 // The command as the window shows it: formatted and wrapped, its first lines only when long,
@@ -623,7 +622,7 @@ const saveOutput = async ($: EngineInterface, id: string, text: string, shown?: 
   return saved.stdout
 }
 
-const logBlock = async ($: EngineInterface, run: BashRun): Promise<string> => {
+const logBlock = async ($: EngineInterface, run: BashRun, risk?: string): Promise<string> => {
   const out: string[] = []
   const cols = await columns($)
   if (lastLogged !== run.id) out.push(...(await headerLines($, run, cols)))
@@ -643,6 +642,8 @@ const logBlock = async ($: EngineInterface, run: BashRun): Promise<string> => {
     // Nothing to add: without output or status, the command stands alone.
   } else if (run.exitCode === 0) out.push(`${ANSI.ok}  ✓ exit 0${ANSI.off}`)
   else out.push(`${ANSI.bad}  ✗ exit ${run.exitCode ?? '?'}${ANSI.off}`)
+  // The teacher's warning sits last, under what the command did.
+  if (risk && settings.showRisk) out.push(...wrap([`  ${ANSI.bad}⚠ ${risk}${ANSI.off}`], cols))
   return out.join('\n') + '\n\n'
 }
 
@@ -941,7 +942,7 @@ export const register: Register = (on, options) => {
       list.map(one => (one.id === id ? { ...one, ...done, isDone: true } : one)),
     )
     enqueue(async () => {
-      const block = await logBlock($, { ...run, ...done, isDone: true })
+      const block = await logBlock($, { ...run, ...done, isDone: true }, (await lesson).risk)
       lastLogged = id
       await appendLog($, block)
       // A background command or monitor keeps writing after the call returns: a detached

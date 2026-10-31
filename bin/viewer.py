@@ -40,7 +40,9 @@ def visible(text):
 
 def display(line):
     """A log line as shown: a ▸ line without its path; a line that is only a path, nothing."""
-    if visible(line).strip().startswith('file://'):
+    text = visible(line).strip()
+    # Older logs wrapped a long path onto the next line, sometimes mid-path.
+    if text.startswith('file://') or re.fullmatch(r'[\w%.~/-]*/[\w%.~/-]*\.txt', text):
         return None
     return LINK_TAIL.sub('', line)
 
@@ -63,6 +65,109 @@ def split_rows(line, cols):
         if width + w > cols:
             rows.append(current + OFF)
             current, width = colour, 0
+        current += token
+        width += w
+    rows.append(current + OFF)
+    return rows
+
+
+# Colours as the mod writes them (hooks/register.tsx ANSI and SYNTAX).
+C = {'say': '\x1b[3;92m', 'bad': '\x1b[1;31m', 'dim': '\x1b[2m', 'term': '\x1b[33m', 'add': '\x1b[32m', 'del': '\x1b[31m',
+     'program': '\x1b[1;36m', 'flag': '\x1b[38;5;117m', 'string': '\x1b[38;5;114m', 'variable': '\x1b[38;5;176m',
+     'operator': '\x1b[1;38;5;215m', 'keyword': '\x1b[38;5;215m', 'comment': '\x1b[2m', 'word': '\x1b[38;5;252m'}
+KEYWORDS = {'if', 'then', 'else', 'elif', 'fi', 'for', 'in', 'do', 'done', 'while', 'until', 'case', 'esac', 'function'}
+SHELL = re.compile(r"""(?P<space>\s+)|(?P<comment>(?<!\S)#.*)|(?P<string>'[^']*'?|"(?:\\.|[^"\\])*"?)"""
+                   r"""|(?P<variable>\$\{[^}]*\}?|\$\(|\$\w+|`)|(?P<operator>&&|\|\||[|;&]|>>?|<<-?|<|\(|\))|(?P<word>[^\s'"$`|;&<>()]+)""")
+
+
+def colour_shell(line, start=True):
+    """One line of a shell command in the mod's syntax colours; answers (text, next is a program)."""
+    out = []
+    for m in SHELL.finditer(line):
+        kind, text = m.lastgroup, m.group()
+        if kind == 'word':
+            if start and text in KEYWORDS:
+                kind = 'keyword'
+            elif start and '=' not in text:
+                kind, start = 'program', False
+            elif text.startswith('-'):
+                kind = 'flag'
+        elif kind == 'operator':
+            start = text in ('&&', '||', '|', ';', '&', '(')
+        if kind == 'space':
+            out.append(text)
+        else:
+            out.append(C[kind] + text + OFF)
+    return ''.join(out), start
+
+
+def format_saved(base, text, shown_before):
+    """A plain saved file as the viewer shows it expanded: coloured by what it holds."""
+    lines = text.rstrip('\n').split('\n')
+    if base.endswith('-explained'):
+        out = []
+        # The command (one or more lines) comes first, then a blank line, then the parts.
+        lines = lines[lines.index('') + 1:] if '' in lines else lines
+        for line in lines:
+            if not line.strip() or line.startswith('$ '):
+                continue
+            if line.startswith('⚠') or line.startswith('→'):
+                continue  # already shown above the link
+            part, meaning = (re.split(r'\s{2,}', line, maxsplit=1) + [''])[:2]
+            out.append(f'    {C["term"]}{part.ljust(14)}{OFF} {C["dim"]}{meaning.strip()}{OFF}')
+        return out
+    if base.endswith('-command'):
+        out, start = [f'    {C["dim"]}the whole command:{OFF}'], True
+        for line in lines:
+            # One step per row: split before && / || / | (quotes kept whole by the tokenizer).
+            pieces, current = [], ''
+            for m in SHELL.finditer(line):
+                if m.lastgroup == 'operator' and m.group() in ('&&', '||', '|') and current.strip():
+                    pieces.append(current.strip())
+                    current = ''
+                current += m.group()
+            pieces.append(current.strip())
+            for n, piece in enumerate(p for p in pieces if p):
+                coloured, start = colour_shell(piece, start)
+                out.append(('      ' if n == 0 else '        ') + coloured)
+        return out
+    if lines and all(l[:1] in '+-' for l in lines if l):
+        return [f'  {C["add"] if l.startswith("+") else C["del"]}{l}{OFF}' for l in lines]
+    # Output: the lines already on screen above the link are skipped.
+    seen = {re.sub(r'\s+', ' ', l).strip()[:30] for l in shown_before}
+    skip = 0
+    while skip < len(lines) and re.sub(r'\s+', ' ', lines[skip]).strip()[:30] in seen:
+        skip += 1
+    return ['  ' + l for l in lines[skip:]]
+
+
+def wrap_rows(line, cols):
+    """A line as screen rows, broken between words, rows after the first indented under it."""
+    if len(visible(line)) <= cols:
+        return [line]
+    lead = len(visible(line)) - len(visible(line).lstrip(' '))
+    indent = ' ' * min(lead + 2, cols // 2)
+    rows, current, width, colour = [], '', 0, ''
+    for token in re.findall(r'\x1b\[[0-9;]*m|[^\S\n]+|[^\s\x1b]+', line):
+        if token.startswith('\x1b'):
+            current += token
+            colour = '' if token == OFF else colour + token
+            continue
+        w = sum(char_width(ch) for ch in token)
+        if token.isspace():
+            if width + w <= cols:
+                current += token
+                width += w
+            continue
+        if width + w > cols and width > len(indent):
+            rows.append(current.rstrip() + OFF)
+            current, width = indent + colour, len(indent)
+        while width + w > cols:  # a word longer than the row
+            room = cols - width
+            current += token[:room]
+            rows.append(current + OFF)
+            token, w = token[room:], w - room
+            current, width = indent + colour, len(indent)
         current += token
         width += w
     rows.append(current + OFF)
@@ -137,7 +242,7 @@ class Feed:
             if shown is None:
                 continue
             if i in self.expanded:
-                shown = line.replace('▸', '▾', 1)
+                shown = shown.replace('▸', '▾', 1)
             key = (i, self.cols, i in self.expanded, i == self.focus)
             if key not in self.cache:
                 if i == self.focus:
@@ -147,7 +252,7 @@ class Feed:
                 rows.append(row)
                 sources.append(i)
             for extra in self.expanded.get(i, []):
-                for row in split_rows(extra, self.cols):
+                for row in wrap_rows(extra, self.cols):
                     rows.append(row)
                     sources.append(i)
         self.rows, self.sources = rows, sources
@@ -199,12 +304,11 @@ class Feed:
         A long path may have been wrapped onto the line after the ▸."""
         for anchor in (index, index - 1):
             if 0 <= anchor < len(self.lines) and '▸' in visible(self.lines[anchor]):
-                for j in (anchor, anchor + 1):
-                    if j < len(self.lines):
-                        match = LINK.search(visible(self.lines[j]))
-                        if match:
-                            return anchor, match
-                return None, None
+                joined = visible(self.lines[anchor]).rstrip()
+                if anchor + 1 < len(self.lines):
+                    joined += visible(self.lines[anchor + 1]).strip()
+                match = LINK.search(joined)
+                return (anchor, match) if match else (None, None)
         return None, None
 
     def toggle(self, index):
@@ -219,7 +323,8 @@ class Feed:
                 if os.path.exists(base + '.ans'):
                     extra = open(base + '.ans', errors='replace').read().rstrip('\n').split('\n')
                 else:
-                    extra = ['    ' + l for l in open(base + '.txt', errors='replace').read().rstrip('\n').split('\n')]
+                    above = [visible(l) for l in self.lines[max(0, index - 80):index]]
+                    extra = format_saved(base, open(base + '.txt', errors='replace').read(), above)
             except OSError:
                 extra = ['    \x1b[2m(the saved file is gone)\x1b[0m']
             if len(extra) > MAX_EXPAND:

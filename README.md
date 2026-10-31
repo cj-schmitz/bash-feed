@@ -3,7 +3,7 @@
 A Claude Code mod that shows every Bash command Claude runs, with its output, in a separate Terminal window. Each session gets its own window. A short "teacher" explains each command's programs, flags and shell symbols as it runs.
 
 - Every shell command Claude sends: Bash calls, Monitor watches, and subagents' commands (tagged `[monitor]` / `[subagent]`), plus Claude's file edits with their diffs (`✎ edited … +12 −3`)
-- Each command opens with Claude's reason as a `# comment`, then a red `⚠` line if it can delete, overwrite, push or send data out
+- Each command opens with Claude's reason as a `# comment`, and ends with a red `⚠` line under the output if it can delete, overwrite, push or send data out
 - Commands in syntax colours, long chains and loops laid out one step per line; a long command shows its first 5 lines, the rest behind a `▸` link
 - Explanations from Haiku: one plain-English sentence in green, with the part-by-part breakdown behind a `▸` link (or shown in full: Explanation layout = expanded)
 - Background commands and monitors stream their output (`┆`) as it arrives, until the task ends
