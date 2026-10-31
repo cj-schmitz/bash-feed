@@ -133,7 +133,7 @@ const appendLog = ($: EngineInterface, text: string) =>
 const openWindow = ($: EngineInterface, keepFocus: boolean) => {
   const title = windowTitle()
   // The BizonAg banner first, then the log as it grows.
-  const tail = `clear; sh '${$.plugin.root}/bin/banner.sh' ${sessionId.slice(0, 8)}; tail -n 300 -F ${logFile().replace('$HOME', '~')}; exit`
+  const tail = `clear; /usr/bin/python3 -I '${$.plugin.root}/bin/banner.py' ${sessionId.slice(0, 8)}; tail -n 300 -F ${logFile().replace('$HOME', '~')}; exit`
   return $.process.run([
     'osascript',
     '-e', `tell application "Terminal"
