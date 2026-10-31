@@ -29,7 +29,12 @@ const enqueue = (write: () => Promise<unknown>) => {
 const TEACHER = `You explain shell commands to someone learning the terminal on macOS.
 List the parts of the command that matter: each program, important flags/options, and shell
 characters such as | > >> 2>/dev/null ; && || $() quotes and globs.
-One part per line, exactly as: PART :: short plain meaning (under 12 words)
+One part per line: the part itself, then " :: ", then a short plain meaning (under 12 words).
+For example, for "ls -la | head":
+ls :: list the files in a folder
+-la :: include hidden files, with details
+| :: send the output into the next command
+head :: keep only the first lines
 At most 8 lines, in the order they appear. Skip plain file paths and arguments
 whose meaning is obvious.
 Then one last line, exactly as: SAY :: one plain-English sentence saying what the whole
@@ -54,6 +59,14 @@ const lessonFor = ($: EngineInterface, command: string): Promise<string[]> => {
         .map(([part, ...meaning]) => [part!.trim(), meaning.join('::').trim()] as const)
       const terms = parts
         .filter(([part]) => part !== 'SAY')
+        .map(([part, meaning]) => {
+          // A reply that echoes a placeholder name ("PART") leads its meaning with the part.
+          if (/^part$/i.test(part)) {
+            const [first = '', ...rest] = meaning.split(' ')
+            return [first, rest.join(' ')] as const
+          }
+          return [part, meaning] as const
+        })
         .map(([part, meaning]) => `  ${ANSI.term}${part.padEnd(14)}${ANSI.off} ${ANSI.dim}${meaning}${ANSI.off}`)
       const say = parts.find(([part]) => part === 'SAY')
       return say ? [...terms, `  ${ANSI.say}→ ${say[1]}${ANSI.off}`] : terms
