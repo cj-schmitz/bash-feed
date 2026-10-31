@@ -68,7 +68,7 @@ type Lesson = { risk?: string; terms: (readonly [string, string])[]; say?: strin
 const lessons = new Map<string, Promise<Lesson>>()
 
 const lessonFor = ($: EngineInterface, command: string): Promise<Lesson> => {
-  if (settings.teacherLevel === 'off') return Promise.resolve({ terms: [] })
+  if (settings.teacherLevel === 'off' || !(settings.showParts || settings.showSummary || settings.showRisk)) return Promise.resolve({ terms: [] })
   const known = lessons.get(command)
   if (known) return known
   const asked = $.model
@@ -127,7 +127,10 @@ const appendLog = ($: EngineInterface, text: string) =>
 const openWindow = ($: EngineInterface, keepFocus: boolean) => {
   const title = windowTitle()
   // The BizonAg banner first, then the log as it grows.
-  const tail = `clear; /usr/bin/python3 -I '${$.plugin.root}/bin/banner.py' ${sessionId.slice(0, 8)}; tail -n 300 -F ${logFile().replace('$HOME', '~')}; exit`
+  const log = logFile().replace('$HOME', '~')
+  const tail = settings.viewer === 'plain'
+    ? `clear; /usr/bin/python3 -I '${$.plugin.root}/bin/banner.py' ${sessionId.slice(0, 8)}; tail -n 300 -F ${log}; exit`
+    : `clear; /usr/bin/python3 -I '${$.plugin.root}/bin/viewer.py' ${log} ${sessionId.slice(0, 8)}; exit`
   return $.process.run([
     'osascript',
     '-e', `tell application "Terminal"
@@ -165,10 +168,10 @@ const editBlock = async ($: EngineInterface, id: string, n: number, verb: string
   const out = [`${mark(n)}${ANSI.edit}✎ ${verb} ${home(path)}${ANSI.off}${detail}${counts}`]
   const rows = changed.map(line => `  ${line.startsWith('+') ? ANSI.add : ANSI.del}${line}${ANSI.off}`)
   const cols = await columns($)
-  const { shown, hidden } = fitRows(wrap(rows, cols), cols, settings.diffRows)
+  const { shown, hidden, rest } = fitRows(wrap(rows, cols), cols, settings.diffRows)
   out.push(...shown)
   if (hidden > 0) {
-    const file = await saveOutput($, id, changed.join('\n'))
+    const file = await saveOutput($, id, changed.join('\n'), rest)
     out.push(`${ANSI.more}  ▸ ${hidden} more line${hidden === 1 ? '' : 's'} · ⌘-click: file://${encodeURI(file)}${ANSI.off}`)
   }
   return out.join('\n') + '\n\n'
@@ -442,12 +445,10 @@ const formatCommand = (command: string, indent: string, cols: number): string =>
 const lessonLines = async ($: EngineInterface, run: BashRun, lesson: Lesson): Promise<string[]> => {
   const risk = lesson.risk && settings.showRisk ? [`  ${ANSI.bad}⚠ ${lesson.risk}${ANSI.off}`] : []
   const say = lesson.say && settings.showSummary ? [`  ${ANSI.say}→ ${lesson.say}${ANSI.off}`] : []
-  const { terms } = lesson
+  const terms = settings.showParts ? lesson.terms : []
   if (terms.length === 0) return [...risk, ...say, ...(risk.length || say.length ? [''] : [])]
-  if (settings.explainer === 'expanded') {
-    const parts = terms.map(([part, meaning]) => `  ${ANSI.term}${part.padEnd(14)}${ANSI.off} ${ANSI.dim}${meaning}${ANSI.off}`)
-    return [...risk, ...parts, ...say, '']
-  }
+  const parts = terms.map(([part, meaning]) => `  ${ANSI.term}${part.padEnd(14)}${ANSI.off} ${ANSI.dim}${meaning}${ANSI.off}`)
+  if (settings.explainer === 'expanded') return [...risk, ...parts, ...say, '']
   const width = Math.min(24, Math.max(...terms.map(([part]) => [...part].length)) + 2)
   const text = [
     `$ ${run.command}`,
@@ -456,7 +457,7 @@ const lessonLines = async ($: EngineInterface, run: BashRun, lesson: Lesson): Pr
     ...terms.map(([part, meaning]) => `${part.padEnd(width)} ${meaning}`),
     ...(lesson.say ? ['', `→ ${lesson.say}`] : []),
   ].join('\n')
-  const file = await saveOutput($, `${run.id}-explained`, `${text}\n`)
+  const file = await saveOutput($, `${run.id}-explained`, `${text}\n`, wrap(parts, await columns($)))
   const link = `  ${ANSI.more}▸ ${terms.length} part${terms.length === 1 ? '' : 's'} explained · ⌘-click: file://${encodeURI(file)}${ANSI.off}`
   return [...risk, ...say, link, '']
 }
@@ -467,7 +468,7 @@ const headerLines = async ($: EngineInterface, run: BashRun, cols: number): Prom
   const lines = wrap([header(run, cols)], cols)
   if (lines.length <= settings.commandLines) return lines
   const hidden = lines.length - settings.commandLines
-  const file = await saveOutput($, `${run.id}-command`, `${run.command}\n`)
+  const file = await saveOutput($, `${run.id}-command`, `${run.command}\n`, lines.slice(settings.commandLines))
   return [
     ...lines.slice(0, settings.commandLines),
     `      ${ANSI.more}▸ ${hidden} more line${hidden === 1 ? '' : 's'} of this command · ⌘-click: file://${encodeURI(file)}${ANSI.off}`,
@@ -489,6 +490,13 @@ const settings = {
   showSummary: true,
   showRisk: true,
   showFileChanges: true,
+  // The part-by-part explanation of each command (shown or behind a link, per explainer).
+  showParts: true,
+  showOutput: true,
+  // The ✓ exit 0 / ✗ exit N line under each command.
+  showStatus: true,
+  // Output a background command or monitor writes after the call returns.
+  showBackground: true,
   // Screen rows of output shown per command, wrapped lines counted; the rest is saved and linked.
   outputRows: 20,
   // Lines of a long command shown before the rest is linked.
@@ -496,6 +504,9 @@ const settings = {
   diffRows: 10,
   openOnStart: true,
   retentionDays: 90,
+  // interactive: the window runs bin/viewer.py (click ▸ to expand, ↑/↓ between steps);
+  // plain: tail -F, with ⌘-click links.
+  viewer: 'interactive' as 'interactive' | 'plain',
 }
 
 // The feed window's width in columns, asked of Terminal at most every 15 seconds.
@@ -576,7 +587,7 @@ const visible = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '')
 const rowsOf = (line: string, cols: number) => Math.max(1, Math.ceil([...visible(line)].length / cols))
 
 // The lines that fit in `budget` screen rows; a line too long for what is left is cut.
-const fitRows = (lines: string[], cols: number, budget: number): { shown: string[]; hidden: number } => {
+const fitRows = (lines: string[], cols: number, budget: number): { shown: string[]; hidden: number; rest: string[] } => {
   const shown: string[] = []
   let left = budget
   for (const [i, line] of lines.entries()) {
@@ -590,9 +601,9 @@ const fitRows = (lines: string[], cols: number, budget: number): { shown: string
       const chars = [...visible(line)].slice(0, left * cols - 1).join('')
       shown.push(`${chars}…${ANSI.off}`)
     }
-    return { shown, hidden: lines.length - i }
+    return { shown, hidden: lines.length - i, rest: lines.slice(i) }
   }
-  return { shown, hidden: 0 }
+  return { shown, hidden: 0, rest: [] }
 }
 
 const linesIn = (text: string): string[] => {
@@ -601,11 +612,14 @@ const linesIn = (text: string): string[] => {
 }
 
 // Saves a command's full output beside the logs and answers the file's absolute path.
-const saveOutput = async ($: EngineInterface, id: string, text: string): Promise<string> => {
+// `shown`, when given, is what the window's viewer expands the link into: the hidden lines,
+// coloured, saved beside it as .ans.
+const saveOutput = async ($: EngineInterface, id: string, text: string, shown?: string[]): Promise<string> => {
   const saved = await $.process.run(
     ['/bin/sh', '-c', `d="$HOME/.claude/bash-feed/out" && mkdir -p "$d" && f="$d/${sessionId.slice(0, 8)}-${id}.txt" && cat > "$f" && printf %s "$f"`],
     { stdin: text },
   )
+  if (shown) await $.process.run(['/bin/sh', '-c', 'cat > "$0"', saved.stdout.replace(/\.txt$/, '.ans')], { stdin: `${shown.join('\n')}\n` })
   return saved.stdout
 }
 
@@ -613,19 +627,21 @@ const logBlock = async ($: EngineInterface, run: BashRun): Promise<string> => {
   const out: string[] = []
   const cols = await columns($)
   if (lastLogged !== run.id) out.push(...(await headerLines($, run, cols)))
-  const body = [
+  const body = !settings.showOutput ? [] : [
     ...linesIn(run.stdout).map(text => `  ${text}`),
     ...linesIn(run.stderr).map(text => `${ANSI.err}  ${text}${ANSI.off}`),
   ]
   // Rows are counted after wrapping, so the link's count is of screen rows hidden.
-  const { shown, hidden } = fitRows(wrap(body, cols), cols, settings.outputRows)
+  const { shown, hidden, rest } = fitRows(wrap(body, cols), cols, settings.outputRows)
   out.push(...shown)
   if (hidden > 0) {
-    const file = await saveOutput($, run.id, [run.stdout, run.stderr].filter(text => text.trim()).join('\n'))
+    const file = await saveOutput($, run.id, [run.stdout, run.stderr].filter(text => text.trim()).join('\n'), rest)
     out.push(`${ANSI.more}  ▸ ${hidden} more line${hidden === 1 ? '' : 's'} · ⌘-click: file://${encodeURI(file)}${ANSI.off}`)
   }
   if (run.note) out.push(...wrap([`${ANSI.bad}  ✗ ${run.note}${ANSI.off}`], cols))
-  else if (run.exitCode === 0) out.push(`${ANSI.ok}  ✓ exit 0${ANSI.off}`)
+  else if (!settings.showStatus) {
+    // Nothing to add: without output or status, the command stands alone.
+  } else if (run.exitCode === 0) out.push(`${ANSI.ok}  ✓ exit 0${ANSI.off}`)
   else out.push(`${ANSI.bad}  ✗ exit ${run.exitCode ?? '?'}${ANSI.off}`)
   return out.join('\n') + '\n\n'
 }
@@ -640,8 +656,8 @@ const clearLogs = async ($: EngineInterface, all: boolean) => {
   const script = `d="$HOME/.claude/bash-feed"; [ -d "$d" ] || exit 0
 before=$(${SIZE})
 find "$d" -maxdepth 1 -type f -name '*.log' ! -name '${sessionId}.log' -delete
-find "$d/out" -type f -name '*.txt' ! -name '${keep}-*' -delete 2>/dev/null
-${all ? `: > "$d/${sessionId}.log"; rm -f "$d/out/${keep}-"*.txt` : ''}
+find "$d/out" -type f \( -name '*.txt' -o -name '*.ans' \) ! -name '${keep}-*' -delete 2>/dev/null
+${all ? `: > "$d/${sessionId}.log"; rm -f "$d/out/${keep}-"*.txt "$d/out/${keep}-"*.ans` : ''}
 echo "$before $(${SIZE})"`
   const ran = await queue.then(() => $.process.run(['/bin/sh', '-c', script]))
   const [before = '?', after = '?'] = ran.stdout.trim().split(/\s+/)
@@ -677,16 +693,22 @@ const settingsMenu = async ($: EngineInterface): Promise<string> => {
     return denied ? `Not changed: ${denied}.` : said
   }
   if (group === "What's shown") {
-    const SHOWN = { showWhy: 'Why line', showSummary: 'Plain-English line', showRisk: 'Risk warnings', showFileChanges: 'File changes' } as const
-    const now = (Object.keys(SHOWN) as (keyof typeof SHOWN)[]).map(key => `${SHOWN[key]} ${onOff(settings[key])}`).join(' · ')
-    const picked = await ask($, `Pick what to show; the rest is hidden. Now: ${now}.`, Object.values(SHOWN), true)
-    if (!picked) return 'Bash feed settings unchanged.'
-    const chosen = picked.split(',').map(one => one.trim())
-    for (const key of Object.keys(SHOWN) as (keyof typeof SHOWN)[]) {
-      const denied = await setOption($, key, chosen.includes(SHOWN[key]))
-      if (denied) return `Not changed: ${denied}.`
+    const BEFORE = { showWhy: 'Why line', showParts: 'Snippet explainers', showSummary: 'Plain-English line', showRisk: 'Risk warnings' } as const
+    const AFTER = { showOutput: 'Command output', showStatus: 'Exit status', showBackground: 'Background output', showFileChanges: 'File changes' } as const
+    const chosen: string[] = []
+    for (const [where, SHOWN] of [['with each command', BEFORE], ['after each command', AFTER]] as const) {
+      const keys = Object.keys(SHOWN) as (keyof typeof SHOWN)[]
+      const now = keys.map(key => `${SHOWN[key]} ${onOff(settings[key])}`).join(' · ')
+      const picked = await ask($, `Shown ${where} (the command itself always is). Pick what to show; the rest is hidden. Now: ${now}.`, Object.values(SHOWN), true)
+      if (!picked) return chosen.length ? `Bash feed now shows: ${chosen.join(', ')}.` : 'Bash feed settings unchanged.'
+      const names = picked.split(',').map(one => one.trim())
+      for (const key of keys) {
+        const denied = await setOption($, key, names.includes(SHOWN[key]))
+        if (denied) return `Not changed: ${denied}.`
+      }
+      chosen.push(...names)
     }
-    return `Bash feed now shows: ${chosen.join(', ') || 'none of these'}.`
+    return `Bash feed now shows: the command${chosen.length ? `, ${chosen.join(', ')}` : ' only'}.`
   }
   if (group === 'Explanations') {
     const toggle = settings.explainer === 'collapsed' ? 'Show every part in the window' : 'Collapse behind a link'
@@ -715,11 +737,17 @@ const settingsMenu = async ($: EngineInterface): Promise<string> => {
     return done(field, rows, `${which}: ${rows}.`)
   }
   if (group === 'Window and logs') {
-    const picked = await ask($, `Window opens at session start: ${onOff(settings.openOnStart)}. Logs kept for: ${settings.retentionDays ? `${settings.retentionDays} days` : 'ever'}. Change:`, [
+    const viewer = settings.viewer === 'interactive' ? 'Plain window (⌘-click links)' : 'Interactive window (click to expand)'
+    const picked = await ask($, `Window: ${settings.viewer}, opens at session start: ${onOff(settings.openOnStart)}. Logs kept for: ${settings.retentionDays ? `${settings.retentionDays} days` : 'ever'}. Change:`, [
+      viewer,
       settings.openOnStart ? "Don't open the window at start" : 'Open the window at start',
       'How long to keep logs',
     ])
     if (!picked) return 'Bash feed settings unchanged.'
+    if (picked === viewer) {
+      const next = settings.viewer === 'interactive' ? 'plain' : 'interactive'
+      return done('viewer', next, `The window will be ${next}; /bash-feed close, then /bash-feed window to reopen it.`)
+    }
     if (picked !== 'How long to keep logs') {
       return done('openOnStart', !settings.openOnStart, `The window will ${settings.openOnStart ? 'not open' : 'open'} when a session starts.`)
     }
@@ -763,11 +791,16 @@ export const register: Register = (on, options) => {
     showSummary: flag('showSummary', true),
     showRisk: flag('showRisk', true),
     showFileChanges: flag('showFileChanges', true),
+    showParts: flag('showParts', true),
+    showOutput: flag('showOutput', true),
+    showStatus: flag('showStatus', true),
+    showBackground: flag('showBackground', true),
     outputRows: count('outputRows', 20, 1),
     commandLines: count('commandLines', 5, 1),
     diffRows: count('diffRows', 10, 0),
     openOnStart: flag('openOnStart', true),
     retentionDays: count('retentionDays', 90, 0),
+    viewer: options.viewer === 'plain' ? 'plain' : 'interactive',
   })
   const retentionDays = settings.retentionDays
 
@@ -785,7 +818,7 @@ export const register: Register = (on, options) => {
     // Session logs and saved outputs older than the retention setting are deleted (0 keeps all).
     if (retentionDays > 0) {
       enqueue(() =>
-        $.process.run(['/bin/sh', '-c', `[ -d "$HOME/.claude/bash-feed" ] && find "$HOME/.claude/bash-feed" -type f \( -name '*.log' -o -name '*.txt' \) -mtime +${retentionDays} -delete`]),
+        $.process.run(['/bin/sh', '-c', `[ -d "$HOME/.claude/bash-feed" ] && find "$HOME/.claude/bash-feed" -type f \( -name '*.log' -o -name '*.txt' -o -name '*.ans' \) -mtime +${retentionDays} -delete`]),
       )
     }
     if (e.isInteractive && enabled && settings.openOnStart) {
@@ -913,7 +946,7 @@ export const register: Register = (on, options) => {
       await appendLog($, block)
       // A background command or monitor keeps writing after the call returns: a detached
       // watcher streams its task file into the log until it ends.
-      if (taskId) {
+      if (taskId && settings.showBackground) {
         const short = command.replace(/\s+/g, ' ')
         const label = `${short.length > 50 ? `${short.slice(0, 50)}…` : short} (task ${taskId})`
         await $.process.run(['/bin/sh', `${$.plugin.root}/bin/tail-task.sh`, sessionId, taskId, label, String(await columns($))])

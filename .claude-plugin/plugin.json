@@ -55,6 +55,36 @@
       "description": "Show Claude's file edits (Edit, Write, notebook edits) with their diffs.",
       "default": true
     },
+    "showParts": {
+      "type": "boolean",
+      "title": "Show snippet explainers",
+      "description": "Explain each part of a command (behind a link or in full, per Explanation layout).",
+      "default": true
+    },
+    "showOutput": {
+      "type": "boolean",
+      "title": "Show command output",
+      "description": "Show what each command printed.",
+      "default": true
+    },
+    "showStatus": {
+      "type": "boolean",
+      "title": "Show exit status",
+      "description": "Show the ✓ exit 0 / ✗ exit N line under each command.",
+      "default": true
+    },
+    "showBackground": {
+      "type": "boolean",
+      "title": "Show background output",
+      "description": "Stream what background commands and monitors print after they start.",
+      "default": true
+    },
+    "viewer": {
+      "type": "string",
+      "title": "Window style",
+      "description": "interactive: click ▸ to expand in place, ↑/↓ between steps. plain: a scrolling log with ⌘-click links.",
+      "default": "interactive"
+    },
     "commandLines": {
       "type": "number",
       "title": "Command lines shown",

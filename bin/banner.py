@@ -36,6 +36,7 @@ def bg(rgb):
 
 
 session = sys.argv[1] if len(sys.argv) > 1 else ''
+interactive = 'interactive' in sys.argv[2:]
 out = ['']
 for row in BISON:
     out.append('  ' + ''.join(f'{bg(PIXEL[ch])}  {OFF}' if ch in PIXEL else '  ' for ch in row))
@@ -48,7 +49,8 @@ out += [
     f'  {fg(CREAM)}→ summary{OFF}   {fg(MUTED)}what it does, in plain English{OFF}',
     f'  {fg(CREAM)}⚠  ✎  ┆{OFF}     {fg(MUTED)}risks · file changes · background output{OFF}',
     '',
-    f'  {fg(LIGHT)}Jump{OFF}        {fg(MUTED)}⌘F, type § (⌥6), Enter, then ⌘G / ⇧⌘G{OFF}',
+    (f'  {fg(LIGHT)}Move{OFF}        {fg(MUTED)}↑ ↓ steps · click ▸ to expand · End back to live{OFF}' if interactive else
+     f'  {fg(LIGHT)}Jump{OFF}        {fg(MUTED)}⌘F, type § (⌥6), Enter, then ⌘G / ⇧⌘G{OFF}'),
     f'  {fg(LIGHT)}Menu{OFF}        {fg(MUTED)}/bash-feed{OFF}      {fg(LIGHT)}Settings{OFF}   {fg(MUTED)}/config{OFF}',
     f'  {fg(BRAND)}{"─" * 40} session {session} ──{OFF}',
     '',

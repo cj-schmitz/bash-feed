@@ -4,11 +4,13 @@ A Claude Code mod that shows every Bash command Claude runs, with its output, in
 
 - Every shell command Claude sends: Bash calls, Monitor watches, and subagents' commands (tagged `[monitor]` / `[subagent]`), plus Claude's file edits with their diffs (`✎ edited … +12 −3`)
 - Each command opens with Claude's reason as a `# comment`, then a red `⚠` line if it can delete, overwrite, push or send data out
-- Commands in syntax colours, long chains and loops laid out one step per line; a long command shows its first 5 lines, the rest behind a ⌘-click link
-- Explanations from Haiku: one plain-English sentence in green, with the part-by-part breakdown behind a ⌘-click link (or shown in full: Explanation layout = expanded)
+- Commands in syntax colours, long chains and loops laid out one step per line; a long command shows its first 5 lines, the rest behind a `▸` link
+- Explanations from Haiku: one plain-English sentence in green, with the part-by-part breakdown behind a `▸` link (or shown in full: Explanation layout = expanded)
 - Background commands and monitors stream their output (`┆`) as it arrives, until the task ends
-- Output is cut at 20 screen rows (wrapped lines count); the rest is saved and linked: ⌘-click `▸ N more lines`
-- Every step is numbered `§12`: press ⌘F in the window, type `§` (⌥6), Enter, then ⌘G / ⇧⌘G to jump to the next / previous step
+- Output is cut at 20 screen rows (wrapped lines count); the rest is saved behind `▸ N more lines`
+- Every step is numbered `§12`
+- The window is interactive: click a `▸` line (or press Enter for the whole step) to expand it in place, click again to collapse; ↑ / ↓ jump between steps; wheel, PgUp / PgDn, j / k scroll; End goes back to live. Select text with ⌥-drag
+- Window style = plain swaps in a plain `tail -F` log: native scrolling and selection, ⌘-click `▸` links to open the saved file, ⌘F `§` (⌥6) then ⌘G / ⇧⌘G to jump
 - The window opens behind Claude when a session starts and closes when that session's Claude process exits
 
 ## Commands
@@ -29,10 +31,12 @@ A Claude Code mod that shows every Bash command Claude runs, with its output, in
 | Explanations | beginner | `beginner`, `intermediate` (skips basics), or `off` (no Haiku calls) |
 | Explanation language | English | any language |
 | Explanation layout | collapsed | `collapsed` (parts behind a link) or `expanded` |
-| Show why line / plain-English line / risk warnings / file changes | on | each can be turned off |
-| Command lines shown | 5 | lines of a long command before the ⌘-click link |
+| Show why line / snippet explainers / plain-English line / risk warnings | on | each can be turned off; with all three teacher lines off, no Haiku calls |
+| Show command output / exit status / background output / file changes | on | each can be turned off |
+| Command lines shown | 5 | lines of a long command before the `▸` link |
 | Output rows per command | 20 | rows shown before the link |
 | Diff rows per file change | 10 | rows shown before the link |
+| Window style | interactive | `interactive` or `plain` (see above) |
 | Open window at session start | on | off: open it with `/bash-feed window` |
 | Keep logs for (days) | 90 | 0 keeps them forever |
 
