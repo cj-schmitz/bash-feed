@@ -205,6 +205,7 @@ export const register: Register = on => {
     const ran = await next(e)
 
     let done: Partial<BashRun>
+    let taskId: string | undefined
     if (ran.deny !== undefined) {
       done = { note: `blocked: ${ran.deny}` }
     } else if (ran.isError === true) {
@@ -215,9 +216,11 @@ export const register: Register = on => {
         ? { exitCode: Number(code[1]), stderr: text.replace(/^Exit code \d+\n?/, '') }
         : { note: text.split('\n')[0] || 'failed', stderr: text.split('\n').slice(1).join('\n') }
     } else {
-      const result = (ran.result ?? {}) as { stdout?: string; stderr?: string; interrupted?: boolean; taskId?: string }
+      const result = (ran.result ?? {}) as { stdout?: string; stderr?: string; interrupted?: boolean; taskId?: string; backgroundTaskId?: string }
+      taskId = result.taskId ?? result.backgroundTaskId
       done = {
-        stdout: result.stdout ?? (result.taskId ? `watching in the background (task ${result.taskId})` : ''),
+        // A backgrounded command's output so far is also in its task file, streamed below.
+        stdout: taskId ? `running in the background (task ${taskId})` : result.stdout ?? '',
         stderr: result.stderr ?? '',
         ...(result.interrupted ? { note: 'interrupted' } : { exitCode: 0 }),
       }
@@ -229,6 +232,13 @@ export const register: Register = on => {
       const block = logBlock({ ...run, ...done, isDone: true })
       lastLogged = id
       await appendLog($, block)
+      // A background command or monitor keeps writing after the call returns: a detached
+      // watcher streams its task file into the log until it ends.
+      if (taskId) {
+        const short = command.replace(/\s+/g, ' ')
+        const label = `${short.length > 50 ? `${short.slice(0, 50)}…` : short} (task ${taskId})`
+        await $.process.run(['/bin/sh', `${$.plugin.root}/bin/tail-task.sh`, sessionId, taskId, label])
+      }
     })
 
     return ran
