@@ -170,7 +170,8 @@ const editBlock = async ($: EngineInterface, id: string, verb: string, path: str
   const counts = `${added ? ` ${ANSI.add}+${added}${ANSI.off}` : ''}${removed ? ` ${ANSI.del}−${removed}${ANSI.off}` : ''}`
   const out = [`${mark(++step)}${ANSI.edit}✎ ${verb} ${home(path)}${ANSI.off}${detail}${counts}`]
   const rows = changed.map(line => `  ${line.startsWith('+') ? ANSI.add : ANSI.del}${line}${ANSI.off}`)
-  const { shown, hidden } = fitRows(rows, await columns($), settings.diffRows)
+  const cols = await columns($)
+  const { shown, hidden } = fitRows(wrap(rows, cols), cols, settings.diffRows)
   out.push(...shown)
   if (hidden > 0) {
     const file = await saveOutput($, id, changed.join('\n'))
@@ -261,6 +262,57 @@ end tell`])
   return width.cols
 }
 
+// Word wrapping: lines the mod writes break at spaces to fit the window, continuation lines
+// indented to line up. A word longer than the line (a path, a URL) is left whole.
+const ESC_OR_WORD = /\x1b\[[0-9;]*m|\s+|[^\s\x1b]+/g
+
+const wrapLine = (line: string, cols: number, indent: string): string[] => {
+  if ([...visible(line)].length <= cols) return [line]
+  const lines: string[] = []
+  const indentWidth = [...visible(indent)].length
+  let current = ''
+  let width = 0
+  // The colours in effect, so a continuation line starts in the same colour.
+  let colour = ''
+  for (const part of line.match(ESC_OR_WORD) ?? []) {
+    if (part.startsWith('\x1b')) {
+      current += part
+      colour = part === ANSI.off ? '' : colour + part
+      continue
+    }
+    const partWidth = [...part].length
+    if (/^\s+$/.test(part)) {
+      // A space that would end the line is dropped with the break.
+      if (width + partWidth < cols) {
+        current += part
+        width += partWidth
+      }
+      continue
+    }
+    if (width + partWidth > cols && width > indentWidth) {
+      lines.push(current.replace(/\s+$/, '') + ANSI.off)
+      current = indent + colour
+      width = indentWidth
+    }
+    current += part
+    width += partWidth
+  }
+  lines.push(current)
+  return lines
+}
+
+// Where a line's continuation lines start: under an explanation's meaning, after "# "
+// for a why line, otherwise two columns in from the line's own indent.
+const wrapIndent = (line: string): string => {
+  const meaning = line.startsWith(`  ${ANSI.term}`) ? line.indexOf(ANSI.dim) : -1
+  if (meaning > 0) return ' '.repeat([...visible(line.slice(0, meaning))].length)
+  const plain = visible(line)
+  if (plain.startsWith('# ')) return `${ANSI.dim}# `
+  return ' '.repeat((/^ */.exec(plain)?.[0].length ?? 0) + 2)
+}
+
+const wrap = (lines: string[], cols: number) => lines.flatMap(line => wrapLine(line, cols, wrapIndent(line)))
+
 const visible = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '')
 const rowsOf = (line: string, cols: number) => Math.max(1, Math.ceil([...visible(line)].length / cols))
 
@@ -300,18 +352,20 @@ const saveOutput = async ($: EngineInterface, id: string, text: string): Promise
 
 const logBlock = async ($: EngineInterface, run: BashRun): Promise<string> => {
   const out: string[] = []
-  if (lastLogged !== run.id) out.push(header(run))
+  const cols = await columns($)
+  if (lastLogged !== run.id) out.push(...wrap([header(run)], cols))
   const body = [
     ...linesIn(run.stdout).map(text => `  ${text}`),
     ...linesIn(run.stderr).map(text => `${ANSI.err}  ${text}${ANSI.off}`),
   ]
-  const { shown, hidden } = fitRows(body, await columns($), settings.outputRows)
+  // Rows are counted after wrapping, so the link's count is of screen rows hidden.
+  const { shown, hidden } = fitRows(wrap(body, cols), cols, settings.outputRows)
   out.push(...shown)
   if (hidden > 0) {
     const file = await saveOutput($, run.id, [run.stdout, run.stderr].filter(text => text.trim()).join('\n'))
     out.push(`${ANSI.more}  ▸ ${hidden} more line${hidden === 1 ? '' : 's'} · ⌘-click: file://${encodeURI(file)}${ANSI.off}`)
   }
-  if (run.note) out.push(`${ANSI.bad}  ✗ ${run.note}${ANSI.off}`)
+  if (run.note) out.push(...wrap([`${ANSI.bad}  ✗ ${run.note}${ANSI.off}`], cols))
   else if (run.exitCode === 0) out.push(`${ANSI.ok}  ✓ exit 0${ANSI.off}`)
   else out.push(`${ANSI.bad}  ✗ exit ${run.exitCode ?? '?'}${ANSI.off}`)
   return out.join('\n') + '\n\n'
@@ -536,7 +590,7 @@ export const register: Register = (on, options) => {
       lastLogged = id
       // Claude's own one-line reason for the command, written as a shell comment.
       const why = description && settings.showWhy ? [`${ANSI.dim}# ${description}${ANSI.off}`] : []
-      await appendLog($, [...why, header(run), ...lines, ''].join('\n'))
+      await appendLog($, [...wrap([...why, header(run), ...lines], await columns($)), ''].join('\n'))
     })
 
     const ran = await next(e)

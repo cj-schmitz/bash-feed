@@ -4,7 +4,7 @@ Usage: tail-task.py <task-id> <log-file> <label> <claude-pid> <window-columns>
 The task's file ends with "[exited with code N]" or "[killed]"; the watch also stops
 when the Claude process exits, or after six hours.
 """
-import glob, os, re, shutil, sys, time
+import glob, os, re, shutil, sys, textwrap, time
 from urllib.parse import quote
 
 task, log, label, pid, cols = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), max(20, int(sys.argv[5]))
@@ -72,9 +72,13 @@ while time.time() < deadline:
         shown += 1
         if cut:
             continue
-        rows = pending_blank + max(1, -(-(len(line) + 4) // cols))
+        # Broken at spaces to fit the window (a line with its own colours is left as is);
+        # a word longer than the line stays whole.
+        pieces = [line] if '\x1b' in line else textwrap.wrap(
+            line, width=cols - 4, subsequent_indent='  ', break_long_words=False, break_on_hyphens=False) or [line]
+        rows = pending_blank + sum(max(1, -(-(len(piece) + 4) // cols)) for piece in pieces)
         if rows_used + rows <= SHOW:
-            out += [f'{BAR}  ┆{OFF}\n'] * pending_blank + [f'{BAR}  ┆{OFF} {line}\n']
+            out += [f'{BAR}  ┆{OFF}\n'] * pending_blank + [f'{BAR}  ┆{OFF} {piece}\n' for piece in pieces]
             rows_used += rows
         else:
             left = SHOW - rows_used - pending_blank
