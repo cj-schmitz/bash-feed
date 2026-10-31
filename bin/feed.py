@@ -77,17 +77,33 @@ def quote_sh(text):
 
 
 def screen_mac():
-    """The main screen's usable area (no menu bar or Dock) as left, top, right, bottom in
-    the top-left coordinates AppleScript's window bounds use."""
-    found = subprocess.run(['osascript', '-l', 'JavaScript', '-e',
-                            "ObjC.import('AppKit'); var s = $.NSScreen.mainScreen, f = s.frame, v = s.visibleFrame;"
-                            "[v.origin.x, f.size.height - v.origin.y - v.size.height, v.size.width, v.size.height].join(',')"],
+    """The usable area (no menu bar or Dock) of the display holding the front Terminal window
+    (Claude's), as left, top, right, bottom in the top-left coordinates of window bounds."""
+    listed = subprocess.run(['osascript', '-l', 'JavaScript', '-e',
+                             "ObjC.import('AppKit'); var a = $.NSScreen.screens, mh = a.objectAtIndex(0).frame.size.height, out = [];"
+                             "for (var i = 0; i < a.count; i++) { var v = a.objectAtIndex(i).visibleFrame;"
+                             " out.push([v.origin.x, mh - v.origin.y - v.size.height, v.origin.x + v.size.width, mh - v.origin.y].join(',')) }"
+                             "out.join(';')"],
+                            capture_output=True, text=True).stdout.strip()
+    screens = []
+    for one in listed.split(';'):
+        try:
+            screens.append(tuple(int(float(n)) for n in one.split(',')))
+        except ValueError:
+            pass
+    if not screens:
+        return 0, 25, 1440, 900
+    front = subprocess.run(['osascript', '-e', 'tell application "Terminal" to get bounds of front window'],
                            capture_output=True, text=True).stdout.strip()
     try:
-        x, y, w, h = (int(float(n)) for n in found.split(','))
-        return x, y, x + w, y + h
+        l, t, r, b = (int(n) for n in front.split(','))
     except ValueError:
-        return 0, 25, 1440, 900
+        return screens[0]
+    x, y = (l + r) / 2, (t + b) / 2
+    for screen in screens:
+        if screen[0] <= x < screen[2] and screen[1] - 40 <= y < screen[3]:
+            return screen
+    return screens[0]
 
 
 # The new window goes right next to the window that was in front (Claude's), level with it
