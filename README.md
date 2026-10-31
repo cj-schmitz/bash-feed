@@ -48,6 +48,8 @@ Logs and saved outputs live in `~/.claude/bash-feed/`.
 
 **Sends.** Only the command's text, cut at 3,000 characters, goes out: to Claude Haiku, through Claude Code's own model call (`$.model.complete`), on the account you are already signed in with, to write the explanation. Output, file contents and the rest of the conversation are never sent anywhere. With Explanations off (or the snippet explainers, plain-English line and risk warnings all hidden) nothing is sent.
 
+**Credentials.** The Haiku calls go through Claude Code with the sign-in it already has; the mod never reads, stores or sends a key, token or password of its own, and asks for none.
+
 **Runs.** Python 3 (`/usr/bin/python3`, `python3`, `py -3` or `python`, whichever is found first) with the scripts in `bin/`:
 
 - `feed.py`: writes the logs, opens and closes the window, cleans up old logs
