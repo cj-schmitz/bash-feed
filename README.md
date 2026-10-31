@@ -42,6 +42,32 @@ A Claude Code mod that shows every Bash command Claude runs, with its output, in
 
 Logs and saved outputs live in `~/.claude/bash-feed/`.
 
+## What it reads, sends, runs and writes
+
+**Reads.** Each shell command Claude runs (Bash and Monitor calls, from the main conversation and from subagents), Claude's one-line description of it, its output, and Claude's file edits (Edit, Write, NotebookEdit). It reads these to show them in the feed window.
+
+**Sends.** Only the command's text, cut at 3,000 characters, goes out: to Claude Haiku, through Claude Code's own model call (`$.model.complete`), on the account you are already signed in with, to write the explanation. Output, file contents and the rest of the conversation are never sent anywhere. With Explanations off (or the snippet explainers, plain-English line and risk warnings all hidden) nothing is sent.
+
+**Runs.** Python 3 (`/usr/bin/python3`, `python3`, `py -3` or `python`, whichever is found first) with the scripts in `bin/`:
+
+- `feed.py`: writes the logs, opens and closes the window, cleans up old logs
+- `viewer.py`: the program in the feed window
+- `tail-task.py`: streams a background command's output into the log
+- `place.py`: puts the window next to Claude's (Linux, Windows)
+- `banner.py`: the header
+
+Those scripts start these programs, each only for the reason given:
+
+- `osascript` (macOS): open, place and close the Terminal window; read the screen's size
+- a terminal program (Linux: `$TERMINAL`, x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal, kitty, alacritty, wezterm, foot, tilix or xterm; Windows: `wt`): open the window
+- `xdotool`, `wmctrl`, `xprop`, `xwininfo`, `xrandr` (Linux, if installed): find Claude's window and the screen, move the feed's window
+- `ps` (macOS, Linux): find the Claude process, so the window closes when it exits
+- `taskkill` (Windows): close the window on `/bash-feed close`
+
+**Writes.** Only inside `~/.claude/bash-feed/`: one log per session (`<session>.log`), the window's process id and width beside it (`<session>.window`, `<session>.cols`), and saved full outputs in `out/`. It edits no build, start-up, settings or instructions file.
+
+**Settings.** `/bash-feed settings` changes only the mod's own `/config` rows (`bash-feed.<setting>`). It sets no environment variables.
+
 ## Systems
 
 Needs Python 3 (`python3`, or `py` on Windows).

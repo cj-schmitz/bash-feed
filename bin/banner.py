@@ -46,7 +46,7 @@ for row in BISON:
     out.append('  ' + ''.join(f'{bg(PIXEL[ch])}  {OFF}' if ch in PIXEL else '  ' for ch in row))
 out += [
     '',
-    f'  {BOLD}{fg(CREAM)}B I Z O N   A G{OFF}   {fg(BRAND)}·   B A S H   F E E D{OFF}',
+    f'  {BOLD}{fg(CREAM)}B I Z O N ,   L L C{OFF}   {fg(BRAND)}·   B A S H   F E E D{OFF}',
     f'  {fg(LIGHT)}Watch Claude work. Learn the terminal.{OFF}',
     '',
     f'  {fg(CREAM)}$ command{OFF}   {fg(MUTED)}what Claude ran, with its # reason above{OFF}',

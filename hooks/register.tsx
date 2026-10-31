@@ -28,8 +28,7 @@ const linkTo = (file: string) => `${clickKey()}-click: ${fileUrl(file)}`
 const PYTHONS = [['/usr/bin/python3'], ['python3'], ['py', '-3'], ['python']]
 
 // Finds a Python 3 and the feed folder; resolves false when there is no Python.
-const setup = ($: EngineInterface): Promise<boolean> =>
-  (host.ready ??= (async () => {
+const probe = async ($: EngineInterface): Promise<boolean> => {
     for (const python of PYTHONS) {
       const ran = await $.process.run([...python, '-I', `${$.plugin.root}/bin/feed.py`, 'probe']).catch(() => undefined)
       const [platform = '', dir = ''] = ran?.exitCode === 0 ? ran.stdout.trim().split(/\r?\n/) : []
@@ -40,7 +39,9 @@ const setup = ($: EngineInterface): Promise<boolean> =>
     }
     await $.ui.toast('Bash feed needs Python 3, which was not found.')
     return false
-  })())
+}
+
+const setup = ($: EngineInterface): Promise<boolean> => (host.ready ??= probe($))
 
 // Runs one bin/feed.py action.
 const feed = async ($: EngineInterface, args: string[], stdin?: string) => {
@@ -646,28 +647,64 @@ const clearLogs = async ($: EngineInterface, all: boolean) => {
     : `Deleted other sessions' Bash feed logs (${before} → ${after}). This session's log stays.`
 }
 
-// Changes one of the mod's /config rows, as the menu would; answers why it did not, if it did not.
+// Changes one of the mod's own /config rows (bash-feed.<field>), as the menu would; answers
+// why it did not, if it did not. Each key is written out, so a reader sees every row it sets.
 const setOption = async ($: EngineInterface, field: string, value: string | number | boolean): Promise<string | undefined> => {
-  const rows = await $.config.list()
-  const row = rows.find(one => one.key.startsWith('bash-feed') && one.key.endsWith(`.${field}`))
-  if (!row) return `the ${field} setting was not found in /config`
-  const set = await $.config.set({ key: row.key, value })
-  return set.deny
+  switch (field) {
+    case 'teacherLevel':
+      return (await $.config.set({ key: 'bash-feed.teacherLevel', value })).deny
+    case 'language':
+      return (await $.config.set({ key: 'bash-feed.language', value })).deny
+    case 'explainer':
+      return (await $.config.set({ key: 'bash-feed.explainer', value })).deny
+    case 'showWhy':
+      return (await $.config.set({ key: 'bash-feed.showWhy', value })).deny
+    case 'showSummary':
+      return (await $.config.set({ key: 'bash-feed.showSummary', value })).deny
+    case 'showRisk':
+      return (await $.config.set({ key: 'bash-feed.showRisk', value })).deny
+    case 'showFileChanges':
+      return (await $.config.set({ key: 'bash-feed.showFileChanges', value })).deny
+    case 'showParts':
+      return (await $.config.set({ key: 'bash-feed.showParts', value })).deny
+    case 'showOutput':
+      return (await $.config.set({ key: 'bash-feed.showOutput', value })).deny
+    case 'showStatus':
+      return (await $.config.set({ key: 'bash-feed.showStatus', value })).deny
+    case 'showBackground':
+      return (await $.config.set({ key: 'bash-feed.showBackground', value })).deny
+    case 'viewer':
+      return (await $.config.set({ key: 'bash-feed.viewer', value })).deny
+    case 'commandLines':
+      return (await $.config.set({ key: 'bash-feed.commandLines', value })).deny
+    case 'outputRows':
+      return (await $.config.set({ key: 'bash-feed.outputRows', value })).deny
+    case 'diffRows':
+      return (await $.config.set({ key: 'bash-feed.diffRows', value })).deny
+    case 'openOnStart':
+      return (await $.config.set({ key: 'bash-feed.openOnStart', value })).deny
+    case 'retentionDays':
+      return (await $.config.set({ key: 'bash-feed.retentionDays', value })).deny
+    default:
+      return `the ${field} setting was not found`
+  }
+}
+
+// Sets one row and answers what the menu says about it.
+const applyOption = async ($: EngineInterface, field: string, value: string | number | boolean, said: string) => {
+  const denied = await setOption($, field, value)
+  return denied ? `Not changed: ${denied}.` : said
 }
 
 // Asks one question; resolves to the label picked, or '' when the dialog was dismissed.
 const ask = ($: EngineInterface, question: string, options: string[], multiSelect = false) =>
   $.ui.ask(question, { header: 'Bash feed', options, ...(multiSelect ? { multiSelect: true as const } : {}) }).catch(() => '')
 
-const onOff = (on: boolean) => (on ? 'on' : 'off')
+const onOff = (isOn: boolean) => (isOn ? 'on' : 'off')
 
 // The settings submenu: four groups, each a question or two. Answers what changed.
 const settingsMenu = async ($: EngineInterface): Promise<string> => {
   const group = await ask($, 'Which settings?', ["What's shown", 'Explanations', 'Output length', 'Window and logs'])
-  const done = async (field: string, value: string | number | boolean, said: string) => {
-    const denied = await setOption($, field, value)
-    return denied ? `Not changed: ${denied}.` : said
-  }
   if (group === "What's shown") {
     const BEFORE = { showWhy: 'Why line', showParts: 'Snippet explainers', showSummary: 'Plain-English line', showRisk: 'Risk warnings' } as const
     const AFTER = { showOutput: 'Command output', showStatus: 'Exit status', showBackground: 'Background output', showFileChanges: 'File changes' } as const
@@ -692,16 +729,16 @@ const settingsMenu = async ($: EngineInterface): Promise<string> => {
     if (!what) return 'Bash feed settings unchanged.'
     if (what === toggle) {
       const layout = settings.explainer === 'collapsed' ? 'expanded' : 'collapsed'
-      return done('explainer', layout, layout === 'collapsed' ? 'Explanations are collapsed behind a link.' : 'Explanations show every part.')
+      return applyOption($, 'explainer', layout, layout === 'collapsed' ? 'Explanations are collapsed behind a link.' : 'Explanations show every part.')
     }
     const picked = what === 'Language' ? 'Change language' : await ask($, `Explanations are ${settings.teacherLevel}. Change to:`, ['Beginner', 'Intermediate', 'Off (no Haiku calls)'])
     if (!picked) return 'Bash feed settings unchanged.'
     if (picked === 'Change language') {
       const language = (await ask($, `Explanations are in ${settings.language}. Which language? (Other: type any)`, ['English', 'Spanish', 'French', 'German'])).trim()
-      return language ? done('language', language, `Explanations will be in ${language}.`) : 'Bash feed settings unchanged.'
+      return language ? applyOption($, 'language', language, `Explanations will be in ${language}.`) : 'Bash feed settings unchanged.'
     }
     const level = picked.startsWith('Off') ? 'off' : picked.toLowerCase()
-    return done('teacherLevel', level, `Explanations: ${level}.`)
+    return applyOption($, 'teacherLevel', level, `Explanations: ${level}.`)
   }
   if (group === 'Output length') {
     const which = await ask($, `Lines shown before the "more lines" link. Now: commands ${settings.commandLines}, output ${settings.outputRows}, diffs ${settings.diffRows}. Change:`, ['Command lines shown', 'Output rows per command', 'Diff rows per file change'])
@@ -710,7 +747,7 @@ const settingsMenu = async ($: EngineInterface): Promise<string> => {
     const answer = await ask($, `${which}? (Other: type a number)`, field === 'commandLines' ? ['3', '5', '10', '20'] : ['10', '20', '40', '80'])
     const rows = Math.floor(Number(answer))
     if (!answer || !Number.isFinite(rows) || rows < (field === 'diffRows' ? 0 : 1)) return 'Bash feed settings unchanged.'
-    return done(field, rows, `${which}: ${rows}.`)
+    return applyOption($, field, rows, `${which}: ${rows}.`)
   }
   if (group === 'Window and logs') {
     const viewer = settings.viewer === 'interactive' ? 'Plain window (⌘-click links)' : 'Interactive window (click to expand)'
@@ -722,16 +759,16 @@ const settingsMenu = async ($: EngineInterface): Promise<string> => {
     if (!picked) return 'Bash feed settings unchanged.'
     if (picked === viewer) {
       const next = settings.viewer === 'interactive' ? 'plain' : 'interactive'
-      return done('viewer', next, `The window will be ${next}; /bash-feed close, then /bash-feed window to reopen it.`)
+      return applyOption($, 'viewer', next, `The window will be ${next}; /bash-feed close, then /bash-feed window to reopen it.`)
     }
     if (picked !== 'How long to keep logs') {
-      return done('openOnStart', !settings.openOnStart, `The window will ${settings.openOnStart ? 'not open' : 'open'} when a session starts.`)
+      return applyOption($, 'openOnStart', !settings.openOnStart, `The window will ${settings.openOnStart ? 'not open' : 'open'} when a session starts.`)
     }
     const KEEP = { '30 days': 30, '90 days': 90, '1 year': 365, Forever: 0 } as Record<string, number>
     const kept = await ask($, 'Keep logs for how long? (Other: type a number of days)', Object.keys(KEEP))
     const days = kept in KEEP ? KEEP[kept]! : Math.floor(Number(kept))
     if (!kept || !Number.isFinite(days) || days < 0) return 'Bash feed settings unchanged.'
-    return done('retentionDays', days, days ? `Logs will be kept for ${days} days.` : 'Logs will be kept forever.')
+    return applyOption($, 'retentionDays', days, days ? `Logs will be kept for ${days} days.` : 'Logs will be kept forever.')
   }
   return 'Bash feed settings unchanged.'
 }
