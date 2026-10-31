@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, ToolCallInput, ToolCallResult } from 'claude-code'
 
 import type { BashRun } from '../types'
 
@@ -17,7 +17,7 @@ const runs = atom({ plugin: 'bash-feed', key: 'runs' } as const, [], {
 let sessionId = ''
 const logFile = () => `$HOME/.claude/bash-feed/${sessionId || 'unknown'}.log`
 const windowTitle = () => `Bash feed ${sessionId.slice(0, 8)}`
-const ANSI = { say: '\x1b[3;92m', cmd: '\x1b[1;36m', err: '\x1b[31m', ok: '\x1b[2;32m', bad: '\x1b[1;31m', dim: '\x1b[2m', term: '\x1b[33m', more: '\x1b[4;34m', off: '\x1b[0m' }
+const ANSI = { say: '\x1b[3;92m', cmd: '\x1b[1;36m', err: '\x1b[31m', ok: '\x1b[2;32m', bad: '\x1b[1;31m', dim: '\x1b[2m', term: '\x1b[33m', more: '\x1b[4;34m', edit: '\x1b[1;34m', add: '\x1b[32m', del: '\x1b[31m', off: '\x1b[0m' }
 // Which run the log last wrote, so a finished run repeats its header only when another came between.
 let lastLogged = ''
 // Log writes run one after another, so a slow lesson never lets a later block jump ahead.
@@ -37,6 +37,11 @@ ls :: list the files in a folder
 head :: keep only the first lines
 At most 8 lines, in the order they appear. Skip plain file paths and arguments
 whose meaning is obvious.
+If the command can lose or overwrite data, delete files, rewrite or push git history, use sudo,
+change permissions, kill processes, install or remove software, or send or publish data
+over the network, add a line: RISK :: what could go wrong, in plain words (under 15 words).
+For example: RISK :: rm -rf deletes the folder for good; there is no trash can.
+Leave the RISK line out when the command only reads or prints.
 Then one last line, exactly as: SAY :: one plain-English sentence saying what the whole
 command does, in order, for someone who has never used a terminal. Example for
 "cd Bizon && cd Ag": SAY :: Move into the Bizon folder, and if that works, move into its Ag folder.
@@ -58,7 +63,7 @@ const lessonFor = ($: EngineInterface, command: string): Promise<string[]> => {
         .filter(bits => bits.length >= 2)
         .map(([part, ...meaning]) => [part!.trim(), meaning.join('::').trim()] as const)
       const terms = parts
-        .filter(([part]) => part !== 'SAY')
+        .filter(([part]) => part !== 'SAY' && part !== 'RISK')
         .map(([part, meaning]) => {
           // A reply that echoes a placeholder name ("PART") leads its meaning with the part.
           if (/^part$/i.test(part)) {
@@ -69,8 +74,13 @@ const lessonFor = ($: EngineInterface, command: string): Promise<string[]> => {
         })
         .map(([part, meaning]) => `  ${ANSI.term}${part.padEnd(14)}${ANSI.off} ${ANSI.dim}${meaning}${ANSI.off}`)
       const say = parts.find(([part]) => part === 'SAY')
-      // A blank line keeps the summary apart from the output that follows.
-      return say ? [...terms, `  ${ANSI.say}→ ${say[1]}${ANSI.off}`, ''] : terms
+      const risk = parts.find(([part]) => part === 'RISK')
+      // The warning leads; a blank line keeps the summary apart from the output that follows.
+      return [
+        ...(risk ? [`  ${ANSI.bad}⚠ ${risk[1]}${ANSI.off}`] : []),
+        ...terms,
+        ...(say ? [`  ${ANSI.say}→ ${say[1]}${ANSI.off}`, ''] : []),
+      ]
     })
     .catch(() => [])
   lessons.set(command, asked)
@@ -129,6 +139,62 @@ end tell`,
     // reload or /clear never closes it.
     $.process.run(['/bin/sh', `${$.plugin.root}/bin/close-on-exit.sh`, sessionId, title]),
   )
+}
+
+// Diff rows shown per file change; a longer diff is saved whole and linked.
+const SHOW_DIFF = 10
+
+const home = (path: string) => path.replace(/^\/Users\/[^/]+/, '~')
+
+type Patch = { lines: string[] }[]
+
+// One file change Claude made with Edit, Write or NotebookEdit: what changed, counted and shown.
+const editBlock = async ($: EngineInterface, id: string, verb: string, path: string, changed: string[], detail = ''): Promise<string> => {
+  const added = changed.filter(line => line.startsWith('+')).length
+  const removed = changed.filter(line => line.startsWith('-')).length
+  const counts = `${added ? ` ${ANSI.add}+${added}${ANSI.off}` : ''}${removed ? ` ${ANSI.del}−${removed}${ANSI.off}` : ''}`
+  const out = [`${ANSI.edit}✎ ${verb} ${home(path)}${ANSI.off}${detail}${counts}`]
+  const rows = changed.map(line => `  ${line.startsWith('+') ? ANSI.add : ANSI.del}${line}${ANSI.off}`)
+  const { shown, hidden } = fitRows(rows, await columns($), SHOW_DIFF)
+  out.push(...shown)
+  if (hidden > 0) {
+    const file = await saveOutput($, id, changed.join('\n'))
+    out.push(`${ANSI.more}  ▸ ${hidden} more line${hidden === 1 ? '' : 's'} · ⌘-click: file://${encodeURI(file)}${ANSI.off}`)
+  }
+  return out.join('\n') + '\n\n'
+}
+
+const changedLines = (patch: Patch | undefined) =>
+  (patch ?? []).flatMap(hunk => hunk.lines).filter(line => /^[+-]/.test(line))
+
+const logEdit = async ($: EngineInterface, e: Extract<ToolCallInput, { tool: 'Edit' | 'Write' | 'NotebookEdit' }>, next: (e: ToolCallInput) => Promise<ToolCallResult>) => {
+  const ran = await next(e)
+  const id = e.tool_use_id
+  const path = e.tool === 'NotebookEdit' ? e.notebook_path : e.file_path
+  const tag = e.agentId ? ` ${ANSI.dim}[subagent]${ANSI.off}` : ''
+  enqueue(async () => {
+    let block: string
+    if (ran.deny !== undefined || ran.isError === true) {
+      const why = (ran.deny ?? ran.text ?? 'failed').split('\n')[0]!.replace(/<\/?tool_use_error>/g, '')
+      block = `${ANSI.edit}✎ ${home(path)}${ANSI.off}${tag}\n${ANSI.bad}  ✗ not changed: ${why}${ANSI.off}\n\n`
+    } else if (e.tool === 'Edit') {
+      const result = ran.result as { structuredPatch?: Patch } | undefined
+      block = await editBlock($, id, 'edited', path, changedLines(result?.structuredPatch), tag)
+    } else if (e.tool === 'Write') {
+      const result = ran.result as { type?: 'create' | 'update'; structuredPatch?: Patch } | undefined
+      const created = result?.type === 'create'
+      const changed = created ? e.content.replace(/\n$/, '').split('\n').map(line => `+${line}`) : changedLines(result?.structuredPatch)
+      block = await editBlock($, id, created ? 'created' : 'rewrote', path, changed, tag)
+    } else {
+      const cell = e.cell_id ? ` ${ANSI.dim}(cell ${e.cell_id})${ANSI.off}` : ''
+      const verb = e.edit_mode === 'insert' ? 'added a cell to' : e.edit_mode === 'delete' ? 'deleted a cell from' : 'edited'
+      const changed = e.edit_mode === 'delete' ? [] : e.new_source.split('\n').map(line => `+${line}`)
+      block = await editBlock($, id, verb, path, changed, cell + tag)
+    }
+    lastLogged = id
+    await appendLog($, block)
+  })
+  return ran
 }
 
 const header = (run: BashRun) => `${ANSI.cmd}$ ${run.command}${ANSI.off}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
@@ -291,8 +357,10 @@ echo "$before $(${SIZE})"`
   // Every shell command Claude sends: Bash calls and Monitor watches, from the main
   // loop and from subagents alike.
   on('tool.call', async ($, e, next) => {
+    if (e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') return logEdit($, e, next)
     const command = e.tool === 'Bash' ? e.command : e.tool === 'Monitor' ? e.command : undefined
     if (!command) return next(e)
+    const description = e.tool === 'Bash' || e.tool === 'Monitor' ? e.description?.trim() : undefined
     const id = e.tool_use_id
     if (!sessionId) sessionId = await $.session.id()
     const tags = [e.tool === 'Monitor' && 'monitor', e.agentId && 'subagent'].filter(Boolean)
@@ -302,7 +370,9 @@ echo "$before $(${SIZE})"`
     enqueue(async () => {
       const lines = await lesson
       lastLogged = id
-      await appendLog($, [header(run), ...lines, ''].join('\n'))
+      // Claude's own one-line reason for the command, written as a shell comment.
+      const why = description ? [`${ANSI.dim}# ${description}${ANSI.off}`] : []
+      await appendLog($, [...why, header(run), ...lines, ''].join('\n'))
     })
 
     const ran = await next(e)
