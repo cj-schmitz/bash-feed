@@ -9,7 +9,7 @@ A Claude Code mod that shows every Bash command Claude runs, with its output, in
 - Background commands and monitors stream their output (`┆`) as it arrives, until the task ends
 - Output is cut at 20 screen rows (wrapped lines count); the rest is saved behind `▸ N more lines`
 - Every step is numbered `§12`
-- The window is interactive: click a `▸` line (or press Enter for the whole step) to expand it in place, click again to collapse; ↑ / ↓ jump between steps; wheel, PgUp / PgDn, j / k scroll; End goes back to live. Select text with ⌥-drag
+- The window is interactive: click a `▸` line (or press Enter for the whole step) to expand it in place, click again to collapse; ↑ / ↓ jump between steps; wheel, PgUp / PgDn, j / k scroll; Esc (or End, ⇧↓, ⌥↓, G) goes back to live. Select text with ⌥-drag
 - Window style = plain swaps in a plain `tail -F` log: native scrolling and selection, ⌘-click `▸` links to open the saved file, ⌘F `§` (⌥6) then ⌘G / ⇧⌘G to jump
 - The window opens behind Claude when a session starts and closes when that session's Claude process exits
 

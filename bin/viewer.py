@@ -11,7 +11,7 @@ the Claude process <claude-pid> exits, writes its own pid beside the log (<log>.
   click, Enter   expand or collapse a ▸ line in place (Enter: every ▸ in the current step)
   wheel, j / k   scroll a line at a time (three for the wheel)
   PgUp / PgDn    scroll a page (also b / space)
-  Home / End     top / back to live (also g / G)
+  Home / End     top / back to live (also g / G; Esc, ⇧↓ or ⌥↓ for live)
 
 A ▸ line links a saved file. Expanding shows the `.ans` file beside it (the hidden lines,
 coloured, as the mod wrote them) or, without one, the `.txt` file itself.
@@ -372,14 +372,14 @@ class Feed:
     # Drawing ----------------------------------------------------------------------
 
     def status(self):
-        keys = [('↑↓', 'steps'), ('click ▸', 'expand'), ('wheel/PgUp/PgDn', 'scroll'), ('End', 'live'), ('⌥drag' if sys.platform == 'darwin' else '⇧drag', 'select')]
+        keys = [('↑↓', 'steps'), ('click ▸', 'expand'), ('wheel/PgUp/PgDn', 'scroll'), ('Esc/End', 'live'), ('⌥drag' if sys.platform == 'darwin' else '⇧drag', 'select')]
         left = '  '.join(f'{BAR_KEY}{k}{BAR_FG} {v}' for k, v in keys)
         right = 'LIVE' if self.live else (f'paused · {self.unseen} new' if self.unseen else 'paused')
         plain_left = '  '.join(f'{k} {v}' for k, v in keys)
         room = self.cols - len(right) - 3
         if len(plain_left) > room:
-            left = f'{BAR_KEY}↑↓{BAR_FG} steps  {BAR_KEY}click ▸{BAR_FG} expand  {BAR_KEY}End{BAR_FG} live'
-            plain_left = '↑↓ steps  click ▸ expand  End live'
+            left = f'{BAR_KEY}↑↓{BAR_FG} steps  {BAR_KEY}click ▸{BAR_FG} expand  {BAR_KEY}Esc{BAR_FG} live'
+            plain_left = '↑↓ steps  click ▸ expand  Esc live'
         pad = max(1, self.cols - len(plain_left) - len(right) - 2)
         tone = BAR_KEY if self.live else BAR_FG
         return f'{BAR_BG}{BAR_FG} {left}{" " * pad}{tone}{right} {OFF}'
@@ -565,6 +565,9 @@ def main():
                     ('\x1b[5~', lambda: feed.scroll(-feed.height + 2)), ('\x1b[6~', lambda: feed.scroll(feed.height - 2)),
                     ('\x1b[H', lambda: feed.scroll(-10 ** 9)), ('\x1b[1~', lambda: feed.scroll(-10 ** 9)),
                     ('\x1b[F', lambda: feed.jump_live()), ('\x1b[4~', lambda: feed.jump_live()),
+                    # Keyboards with no End key (Macs): ⇧↓, ⌥↓, ⌘↓ where the terminal passes it on.
+                    ('\x1b[1;2B', lambda: feed.jump_live()), ('\x1b[1;3B', lambda: feed.jump_live()),
+                    ('\x1b[1;9B', lambda: feed.jump_live()), ('\x1b\x1b[B', lambda: feed.jump_live()),
                 ):
                     if pending.startswith(seq):
                         pending = pending[len(seq):]
@@ -577,6 +580,8 @@ def main():
                         if more:
                             pending += more
                             continue
+                        if pending == '\x1b':
+                            feed.jump_live()  # Esc alone: back to live, for keyboards with no End key
                         pending = ''
                         break
                     key, pending = pending[0], pending[1:]

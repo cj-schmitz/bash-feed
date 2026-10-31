@@ -53,7 +53,7 @@ out += [
     f'  {fg(CREAM)}→ summary{OFF}   {fg(MUTED)}what it does, in plain English{OFF}',
     f'  {fg(CREAM)}⚠  ✎  ┆{OFF}     {fg(MUTED)}risks · file changes · background output{OFF}',
     '',
-    (f'  {fg(LIGHT)}Move{OFF}        {fg(MUTED)}↑ ↓ steps · click ▸ to expand · End back to live{OFF}' if interactive else
+    (f'  {fg(LIGHT)}Move{OFF}        {fg(MUTED)}↑ ↓ steps · click ▸ to expand · Esc back to live{OFF}' if interactive else
      f'  {fg(LIGHT)}Jump{OFF}        {fg(MUTED)}{JUMP}{OFF}'),
     f'  {fg(LIGHT)}Menu{OFF}        {fg(MUTED)}/bash-feed{OFF}      {fg(LIGHT)}Settings{OFF}   {fg(MUTED)}/bash-feed settings{OFF}',
     '',
