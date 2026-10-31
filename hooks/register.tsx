@@ -228,7 +228,219 @@ const closeWindow = ($: EngineInterface) =>
 end tell'`,
   ])
 
-const header = (run: BashRun) => `${mark(run.n)}${ANSI.cmd}$ ${run.command.replace(/\n/g, `${ANSI.off}\n    ${ANSI.cmd}`)}${ANSI.off}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
+// Shell syntax colours for the command line: programs, flags, quoted text, variables and
+// substitutions, operators and keywords, comments, heredoc bodies.
+const SYNTAX = {
+  program: '\x1b[1;36m',
+  flag: '\x1b[38;5;117m',
+  string: '\x1b[38;5;114m',
+  variable: '\x1b[38;5;176m',
+  operator: '\x1b[1;38;5;215m',
+  keyword: '\x1b[38;5;215m',
+  comment: '\x1b[2m',
+  heredoc: '\x1b[38;5;223m',
+  word: '\x1b[38;5;252m',
+}
+
+type Token = { kind: 'space' | 'newline' | 'word' | 'string' | 'variable' | 'chain' | 'redirect' | 'paren' | 'comment' | 'heredoc'; text: string }
+
+const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'for', 'in', 'do', 'done', 'while', 'until', 'case', 'esac', 'function', '!', 'time'])
+
+// Splits a command into shell tokens. Quotes, $(…), ${…}, backticks and heredoc bodies stay
+// whole; it only needs to be right enough to colour and lay out, never to run.
+const tokenize = (command: string): Token[] => {
+  const tokens: Token[] = []
+  const heredocs: string[] = []
+  let i = 0
+  // The end of a quoted or bracketed run starting at `at`.
+  const closing = (at: number, open: string, close: string): number => {
+    let depth = 0
+    for (let j = at; j < command.length; j++) {
+      const ch = command[j]
+      if (ch === '\\') j++
+      else if (ch === "'" && open !== "'") j = command.indexOf("'", j + 1) === -1 ? command.length : command.indexOf("'", j + 1)
+      else if (ch === open && (open !== close || j === at)) depth++
+      else if (ch === close && --depth === 0) return j + 1
+    }
+    return command.length
+  }
+  while (i < command.length) {
+    const rest = command.slice(i)
+    const ch = command[i]!
+    const previous = tokens[tokens.length - 1]
+    const atWordStart = !previous || ['space', 'newline', 'chain', 'paren'].includes(previous.kind)
+    let match: RegExpExecArray | null
+    if (ch === '\n') {
+      tokens.push({ kind: 'newline', text: '\n' })
+      i++
+      // A heredoc's body runs from here to the line holding only its delimiter.
+      for (const end of heredocs.splice(0)) {
+        const lines = command.slice(i).split('\n')
+        const stop = lines.findIndex(line => line.trim() === end)
+        const body = (stop === -1 ? lines : lines.slice(0, stop + 1)).join('\n')
+        tokens.push({ kind: 'heredoc', text: body })
+        i += body.length
+      }
+    } else if ((match = /^[ \t]+/.exec(rest))) {
+      tokens.push({ kind: 'space', text: match[0] })
+      i += match[0].length
+    } else if (ch === '#' && atWordStart) {
+      const end = command.indexOf('\n', i)
+      tokens.push({ kind: 'comment', text: command.slice(i, end === -1 ? undefined : end) })
+      i = end === -1 ? command.length : end
+    } else if (ch === "'") {
+      const end = command.indexOf("'", i + 1)
+      const stop = end === -1 ? command.length : end + 1
+      tokens.push({ kind: 'string', text: command.slice(i, stop) })
+      i = stop
+    } else if (ch === '"') {
+      let j = i + 1
+      while (j < command.length && command[j] !== '"') j += command[j] === '\\' ? 2 : 1
+      tokens.push({ kind: 'string', text: command.slice(i, j + 1) })
+      i = j + 1
+    } else if (rest.startsWith('$(')) {
+      const stop = closing(i + 1, '(', ')')
+      tokens.push({ kind: 'variable', text: command.slice(i, stop) })
+      i = stop
+    } else if (rest.startsWith('${')) {
+      const stop = closing(i + 1, '{', '}')
+      tokens.push({ kind: 'variable', text: command.slice(i, stop) })
+      i = stop
+    } else if (ch === '`') {
+      const end = command.indexOf('`', i + 1)
+      const stop = end === -1 ? command.length : end + 1
+      tokens.push({ kind: 'variable', text: command.slice(i, stop) })
+      i = stop
+    } else if ((match = /^\$([A-Za-z_][A-Za-z0-9_]*|[0-9#?@*$!-])/.exec(rest))) {
+      tokens.push({ kind: 'variable', text: match[0] })
+      i += match[0].length
+    } else if ((match = /^(&&|\|\||\|&|\||;;|;|&(?!>))/.exec(rest))) {
+      tokens.push({ kind: 'chain', text: match[0] })
+      i += match[0].length
+    } else if ((match = /^[0-9]?(<<-?|<<<|>>|>&[0-9-]?|&>>?|>|<)/.exec(rest))) {
+      tokens.push({ kind: 'redirect', text: match[0] })
+      i += match[0].length
+      if (match[1] === '<<' || match[1] === '<<-') {
+        // The delimiter, quoted or not, names where the heredoc body ends.
+        const delimiter = /^[ \t]*(['"]?)([A-Za-z0-9_]+)\1/.exec(command.slice(i))
+        if (delimiter) heredocs.push(delimiter[2]!)
+      }
+    } else if (ch === '(' || ch === ')' || ch === '{' && atWordStart || ch === '}' && atWordStart) {
+      tokens.push({ kind: 'paren', text: ch })
+      i++
+    } else {
+      match = /^(\\.|[^\s|&;<>()'"`$\\])+/.exec(rest) ?? /^./.exec(rest)!
+      tokens.push({ kind: 'word', text: match[0] })
+      i += match[0].length
+    }
+  }
+  return tokens
+}
+
+// The command coloured and laid out: a long chain breaks before &&, || and | and after ;,
+// each part on its own line under the first. `indent` is where those lines start.
+const formatCommand = (command: string, indent: string, cols: number): string => {
+  const tokens = tokenize(command)
+  const chains = tokens.filter(token => token.kind === 'chain' && token.text !== '&').length
+  const isLong = indent.length + [...command].length > cols || chains >= 3
+  let out = ''
+  let expectProgram = true
+  let skipSpace = false
+  // How deep inside do…done, then…fi and case…esac the next line is; each level indents two.
+  let depth = 0
+  const lineStart = () => `\n${indent}${'  '.repeat(Math.max(0, depth))}`
+  const nextWord = (k: number) => tokens.slice(k + 1).find(next => next.kind !== 'space')
+  const OPENS = new Set(['do', 'then', 'else', 'elif'])
+  const CLOSES = new Set(['done', 'fi', 'esac', 'else', 'elif'])
+  for (const [k, token] of tokens.entries()) {
+    if (token.kind === 'space') {
+      if (!skipSpace) out += token.text
+      continue
+    }
+    skipSpace = false
+    let colour: string = SYNTAX.word
+    switch (token.kind) {
+      case 'newline':
+        out += `\n${indent}`
+        expectProgram = true
+        skipSpace = true
+        continue
+      case 'heredoc':
+        out += token.text
+          .split('\n')
+          .map((line, k) => `${k ? `\n${indent}` : ''}${SYNTAX.heredoc}${line}${ANSI.off}`)
+          .join('')
+        continue
+      case 'chain':
+        expectProgram = true
+        if (isLong && token.text !== '&' && token.text !== ';;') {
+          const next = nextWord(k)
+          if (token.text === ';' && next?.kind === 'word' && (next.text === 'do' || next.text === 'then')) {
+            // "for …; do" and "if …; then" stay on one line; the body starts below.
+            out += `${SYNTAX.operator};${ANSI.off} `
+          } else if (token.text === ';') {
+            if (next?.kind === 'word' && CLOSES.has(next.text)) depth--
+            out += `${SYNTAX.operator};${ANSI.off}${lineStart()}`
+          } else {
+            out = `${out.replace(/[ \t]+$/, '')}${lineStart()}${SYNTAX.operator}${token.text}${ANSI.off} `
+          }
+          skipSpace = true
+          continue
+        }
+        colour = SYNTAX.operator
+        break
+      case 'redirect':
+        colour = SYNTAX.operator
+        break
+      case 'paren':
+        expectProgram = token.text === '(' || token.text === '{'
+        colour = SYNTAX.operator
+        break
+      case 'comment':
+        colour = SYNTAX.comment
+        break
+      case 'string':
+        colour = SYNTAX.string
+        expectProgram = false
+        break
+      case 'variable':
+        colour = SYNTAX.variable
+        expectProgram = false
+        break
+      case 'word':
+        if (KEYWORDS.has(token.text) && expectProgram) {
+          colour = SYNTAX.keyword
+          if (isLong && OPENS.has(token.text)) {
+            // The body of a loop or an if goes on the next lines, one level in.
+            depth++
+            out += `${colour}${token.text}${ANSI.off}${lineStart()}`
+            skipSpace = true
+            expectProgram = true
+            continue
+          }
+          // After these a new command starts; after `for`/`case` comes a name, then `in`.
+          expectProgram = ['then', 'else', 'elif', 'do', '!', 'time', 'if', 'while', 'until'].includes(token.text)
+        } else if (expectProgram && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text)) {
+          colour = SYNTAX.variable
+        } else if (expectProgram) {
+          colour = SYNTAX.program
+          expectProgram = false
+        } else if (/^--?[A-Za-z0-9]/.test(token.text)) {
+          colour = SYNTAX.flag
+        } else if (token.text === 'in' || token.text === 'done') {
+          colour = SYNTAX.keyword
+        }
+        break
+    }
+    out += `${colour}${token.text}${ANSI.off}`
+  }
+  return out
+}
+
+const header = (run: BashRun, cols = width.cols) => {
+  const prefix = `${run.n ? `§${run.n} ` : ''}$ `
+  return `${mark(run.n)}${ANSI.dim}$${ANSI.off} ${formatCommand(run.command, ' '.repeat(prefix.length + 2), cols)}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
+}
 
 // The person's settings (the bash-feed rows in /config), set by register from its options.
 const settings = {
