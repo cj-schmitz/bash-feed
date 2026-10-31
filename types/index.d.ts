@@ -6,6 +6,8 @@ export type BashRun = {
   stderr: string
   exitCode?: number
   note?: string
+  /** Where the command came from when not a main-loop Bash call: monitor, subagent. */
+  from?: string
 }
 
 declare module 'claude-code' {

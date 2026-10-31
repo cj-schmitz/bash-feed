@@ -17,9 +17,9 @@ if [ -f "$lock" ] && kill -0 "$(cat "$lock")" 2>/dev/null; then exit 0; fi
 
 nohup sh -c '
   echo $$ > "$3"
-  while kill -0 "$1" 2>/dev/null; do sleep 2; done
+  while kill -0 "$1" 2>/dev/null; do sleep 0.5; done
   pkill -f "[t]ail -n 300 -F .*bash-feed/$4.log"
-  sleep 1
+  sleep 0.2
   osascript -e "tell application \"Terminal\"
   repeat with w in (get windows)
     try

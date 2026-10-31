@@ -17,7 +17,7 @@ const runs = atom({ plugin: 'bash-feed', key: 'runs' } as const, [], {
 let sessionId = ''
 const logFile = () => `$HOME/.claude/bash-feed/${sessionId || 'unknown'}.log`
 const windowTitle = () => `Bash feed ${sessionId.slice(0, 8)}`
-const ANSI = { cmd: '\x1b[1;36m', err: '\x1b[31m', ok: '\x1b[2;32m', bad: '\x1b[1;31m', dim: '\x1b[2m', term: '\x1b[33m', off: '\x1b[0m' }
+const ANSI = { say: '\x1b[1;37m', cmd: '\x1b[1;36m', err: '\x1b[31m', ok: '\x1b[2;32m', bad: '\x1b[1;31m', dim: '\x1b[2m', term: '\x1b[33m', off: '\x1b[0m' }
 // Which run the log last wrote, so a finished run repeats its header only when another came between.
 let lastLogged = ''
 // Log writes run one after another, so a slow lesson never lets a later block jump ahead.
@@ -31,7 +31,11 @@ List the parts of the command that matter: each program, important flags/options
 characters such as | > >> 2>/dev/null ; && || $() quotes and globs.
 One part per line, exactly as: PART :: short plain meaning (under 12 words)
 At most 8 lines, in the order they appear. Skip plain file paths and arguments
-whose meaning is obvious. No intro, no closing, no markdown.`
+whose meaning is obvious.
+Then one last line, exactly as: SAY :: one plain-English sentence saying what the whole
+command does, in order, for someone who has never used a terminal. Example for
+"cd Bizon && cd Ag": SAY :: Move into the Bizon folder, and if that works, move into its Ag folder.
+No intro, no closing, no markdown.`
 
 // Lessons by command, so a repeated command is not explained twice.
 const lessons = new Map<string, Promise<string[]>>()
@@ -41,15 +45,19 @@ const lessonFor = ($: EngineInterface, command: string): Promise<string[]> => {
   if (known) return known
   const asked = $.model
     .complete({ model: 'haiku', system: TEACHER, prompt: command, maxTokens: 400, timeoutMs: 20_000 })
-    .then(reply =>
-      reply.isAnswered
-        ? reply.text
-            .split('\n')
-            .map(line => line.split('::'))
-            .filter(parts => parts.length >= 2)
-            .map(([part, ...meaning]) => `  ${ANSI.term}${part!.trim().padEnd(14)}${ANSI.off} ${ANSI.dim}${meaning.join('::').trim()}${ANSI.off}`)
-        : [],
-    )
+    .then(reply => {
+      if (!reply.isAnswered) return []
+      const parts = reply.text
+        .split('\n')
+        .map(line => line.split('::'))
+        .filter(bits => bits.length >= 2)
+        .map(([part, ...meaning]) => [part!.trim(), meaning.join('::').trim()] as const)
+      const terms = parts
+        .filter(([part]) => part !== 'SAY')
+        .map(([part, meaning]) => `  ${ANSI.term}${part.padEnd(14)}${ANSI.off} ${ANSI.dim}${meaning}${ANSI.off}`)
+      const say = parts.find(([part]) => part === 'SAY')
+      return say ? [...terms, `  ${ANSI.say}→ ${say[1]}${ANSI.off}`] : terms
+    })
     .catch(() => [])
   lessons.set(command, asked)
   return asked
@@ -109,9 +117,11 @@ end tell`,
   )
 }
 
+const header = (run: BashRun) => `${ANSI.cmd}$ ${run.command}${ANSI.off}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
+
 const logBlock = (run: BashRun): string => {
   const out: string[] = []
-  if (lastLogged !== run.id) out.push(`${ANSI.cmd}$ ${run.command}${ANSI.off}`)
+  if (lastLogged !== run.id) out.push(header(run))
   for (const text of clip(run.stdout)) out.push(`  ${text}`)
   for (const text of clip(run.stderr)) out.push(`${ANSI.err}  ${text}${ANSI.off}`)
   if (run.note) out.push(`${ANSI.bad}  ✗ ${run.note}${ANSI.off}`)
@@ -162,16 +172,21 @@ export const register: Register = on => {
     return { text: 'Bash feed window opened.' }
   })
 
-  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+  // Every shell command Claude sends: Bash calls and Monitor watches, from the main
+  // loop and from subagents alike.
+  on('tool.call', async ($, e, next) => {
+    const command = e.tool === 'Bash' ? e.command : e.tool === 'Monitor' ? e.command : undefined
+    if (!command) return next(e)
     const id = e.tool_use_id
     if (!sessionId) sessionId = await $.session.id()
-    const run: BashRun = { id, command: e.command, isDone: false, stdout: '', stderr: '' }
+    const tags = [e.tool === 'Monitor' && 'monitor', e.agentId && 'subagent'].filter(Boolean)
+    const run: BashRun = { id, command, isDone: false, stdout: '', stderr: '', ...(tags.length ? { from: tags.join(', ') } : {}) }
     await update($, runs, list => [...list, run].slice(-MAX_RUNS))
     const lesson = lessonFor($, run.command)
     enqueue(async () => {
       const lines = await lesson
       lastLogged = id
-      await appendLog($, [`${ANSI.cmd}$ ${run.command}${ANSI.off}`, ...lines, ''].join('\n'))
+      await appendLog($, [header(run), ...lines, ''].join('\n'))
     })
 
     const ran = await next(e)
@@ -187,9 +202,9 @@ export const register: Register = on => {
         ? { exitCode: Number(code[1]), stderr: text.replace(/^Exit code \d+\n?/, '') }
         : { note: text.split('\n')[0] || 'failed', stderr: text.split('\n').slice(1).join('\n') }
     } else {
-      const result = ran.result as { stdout?: string; stderr?: string; interrupted?: boolean }
+      const result = (ran.result ?? {}) as { stdout?: string; stderr?: string; interrupted?: boolean; taskId?: string }
       done = {
-        stdout: result.stdout ?? '',
+        stdout: result.stdout ?? (result.taskId ? `watching in the background (task ${result.taskId})` : ''),
         stderr: result.stderr ?? '',
         ...(result.interrupted ? { note: 'interrupted' } : { exitCode: 0 }),
       }
