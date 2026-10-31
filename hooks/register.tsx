@@ -17,7 +17,7 @@ const runs = atom({ plugin: 'bash-feed', key: 'runs' } as const, [], {
 let sessionId = ''
 const logFile = () => `$HOME/.claude/bash-feed/${sessionId || 'unknown'}.log`
 const windowTitle = () => `Bash feed ${sessionId.slice(0, 8)}`
-const ANSI = { say: '\x1b[1;37m', cmd: '\x1b[1;36m', err: '\x1b[31m', ok: '\x1b[2;32m', bad: '\x1b[1;31m', dim: '\x1b[2m', term: '\x1b[33m', more: '\x1b[4;34m', off: '\x1b[0m' }
+const ANSI = { say: '\x1b[3;92m', cmd: '\x1b[1;36m', err: '\x1b[31m', ok: '\x1b[2;32m', bad: '\x1b[1;31m', dim: '\x1b[2m', term: '\x1b[33m', more: '\x1b[4;34m', off: '\x1b[0m' }
 // Which run the log last wrote, so a finished run repeats its header only when another came between.
 let lastLogged = ''
 // Log writes run one after another, so a slow lesson never lets a later block jump ahead.
@@ -69,7 +69,8 @@ const lessonFor = ($: EngineInterface, command: string): Promise<string[]> => {
         })
         .map(([part, meaning]) => `  ${ANSI.term}${part.padEnd(14)}${ANSI.off} ${ANSI.dim}${meaning}${ANSI.off}`)
       const say = parts.find(([part]) => part === 'SAY')
-      return say ? [...terms, `  ${ANSI.say}→ ${say[1]}${ANSI.off}`] : terms
+      // A blank line keeps the summary apart from the output that follows.
+      return say ? [...terms, `  ${ANSI.say}→ ${say[1]}${ANSI.off}`, ''] : terms
     })
     .catch(() => [])
   lessons.set(command, asked)
