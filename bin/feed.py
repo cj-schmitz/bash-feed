@@ -76,20 +76,62 @@ def quote_sh(text):
     return "'" + text.replace("'", "'\\''") + "'"
 
 
-def open_mac(viewer, title, keep_focus):
-    command = 'clear; ' + ' '.join(quote_sh(a) for a in viewer) + '; exit'
-    apple('''on run argv
+def screen_mac():
+    """The main screen's usable area (no menu bar or Dock) as left, top, right, bottom in
+    the top-left coordinates AppleScript's window bounds use."""
+    found = subprocess.run(['osascript', '-l', 'JavaScript', '-e',
+                            "ObjC.import('AppKit'); var s = $.NSScreen.mainScreen, f = s.frame, v = s.visibleFrame;"
+                            "[v.origin.x, f.size.height - v.origin.y - v.size.height, v.size.width, v.size.height].join(',')"],
+                           capture_output=True, text=True).stdout.strip()
+    try:
+        x, y, w, h = (int(float(n)) for n in found.split(','))
+        return x, y, x + w, y + h
+    except ValueError:
+        return 0, 25, 1440, 900
+
+
+# The new window goes right next to the window that was in front (Claude's), level with it
+# and as tall: on its right if there is room, else its left; narrower (down to MIN_WIDTH) to
+# fit, else along the screen's right edge.
+WIDTH, MIN_WIDTH, GAP = 720, 480, 6
+
+PLACE_MAC = '''on run argv
+set {scrL, scrT, scrR, scrB, feedW, minW, gap} to {(item 4 of argv) as integer, (item 5 of argv) as integer, (item 6 of argv) as integer, (item 7 of argv) as integer, (item 8 of argv) as integer, (item 9 of argv) as integer, (item 10 of argv) as integer}
 tell application "Terminal"
   set prevWin to missing value
   if (count of windows) > 0 then set prevWin to front window
-  set custom title of (do script (item 1 of argv)) to (item 2 of argv)
+  set feedTab to do script (item 1 of argv)
+  set custom title of feedTab to (item 2 of argv)
+  set feedWin to front window
+  if prevWin is not missing value then
+    set {l, t, r, b} to bounds of prevWin
+    set roomRight to scrR - r - gap
+    set roomLeft to l - scrL - gap
+    if roomRight >= feedW then
+      set bounds of feedWin to {r + gap, t, r + gap + feedW, b}
+    else if roomLeft >= feedW then
+      set bounds of feedWin to {l - gap - feedW, t, l - gap, b}
+    else if roomRight >= minW and roomRight >= roomLeft then
+      set bounds of feedWin to {r + gap, t, scrR, b}
+    else if roomLeft >= minW then
+      set bounds of feedWin to {scrL, t, l - gap, b}
+    else
+      set bounds of feedWin to {scrR - feedW, t, scrR, b}
+    end if
+  end if
   if (item 3 of argv) is "1" and prevWin is not missing value then
     set index of prevWin to 1
   else
     activate
   end if
 end tell
-end run''', command, title, '1' if keep_focus else '0')
+end run'''
+
+
+def open_mac(viewer, title, keep_focus):
+    command = 'clear; ' + ' '.join(quote_sh(a) for a in viewer) + '; exit'
+    area = screen_mac()
+    apple(PLACE_MAC, command, title, '1' if keep_focus else '0', *map(str, area), str(WIDTH), str(MIN_WIDTH), str(GAP))
 
 
 # Terminal programs on Linux, tried in order: each as the arguments that run `viewer`
