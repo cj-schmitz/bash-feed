@@ -164,11 +164,11 @@ const home = (path: string) => path.replace(/^\/Users\/[^/]+/, '~')
 type Patch = { lines: string[] }[]
 
 // One file change Claude made with Edit, Write or NotebookEdit: what changed, counted and shown.
-const editBlock = async ($: EngineInterface, id: string, verb: string, path: string, changed: string[], detail = ''): Promise<string> => {
+const editBlock = async ($: EngineInterface, id: string, n: number, verb: string, path: string, changed: string[], detail = ''): Promise<string> => {
   const added = changed.filter(line => line.startsWith('+')).length
   const removed = changed.filter(line => line.startsWith('-')).length
   const counts = `${added ? ` ${ANSI.add}+${added}${ANSI.off}` : ''}${removed ? ` ${ANSI.del}−${removed}${ANSI.off}` : ''}`
-  const out = [`${mark(++step)}${ANSI.edit}✎ ${verb} ${home(path)}${ANSI.off}${detail}${counts}`]
+  const out = [`${mark(n)}${ANSI.edit}✎ ${verb} ${home(path)}${ANSI.off}${detail}${counts}`]
   const rows = changed.map(line => `  ${line.startsWith('+') ? ANSI.add : ANSI.del}${line}${ANSI.off}`)
   const cols = await columns($)
   const { shown, hidden } = fitRows(wrap(rows, cols), cols, settings.diffRows)
@@ -184,8 +184,10 @@ const changedLines = (patch: Patch | undefined) =>
   (patch ?? []).flatMap(hunk => hunk.lines).filter(line => /^[+-]/.test(line))
 
 const logEdit = async ($: EngineInterface, e: Extract<ToolCallInput, { tool: 'Edit' | 'Write' | 'NotebookEdit' }>, next: (e: ToolCallInput) => Promise<ToolCallResult>) => {
+  if (!enabled || !settings.showFileChanges) return next(e)
+  // The step number is taken when the call starts, as a command's is, so steps log in order.
+  const n = ++step
   const ran = await next(e)
-  if (!enabled || !settings.showFileChanges) return ran
   const id = e.tool_use_id
   const path = e.tool === 'NotebookEdit' ? e.notebook_path : e.file_path
   const tag = e.agentId ? ` ${ANSI.dim}[subagent]${ANSI.off}` : ''
@@ -193,20 +195,20 @@ const logEdit = async ($: EngineInterface, e: Extract<ToolCallInput, { tool: 'Ed
     let block: string
     if (ran.deny !== undefined || ran.isError === true) {
       const why = (ran.deny ?? ran.text ?? 'failed').split('\n')[0]!.replace(/<\/?tool_use_error>/g, '')
-      block = `${mark(++step)}${ANSI.edit}✎ ${home(path)}${ANSI.off}${tag}\n${ANSI.bad}  ✗ not changed: ${why}${ANSI.off}\n\n`
+      block = `${mark(n)}${ANSI.edit}✎ ${home(path)}${ANSI.off}${tag}\n${ANSI.bad}  ✗ not changed: ${why}${ANSI.off}\n\n`
     } else if (e.tool === 'Edit') {
       const result = ran.result as { structuredPatch?: Patch } | undefined
-      block = await editBlock($, id, 'edited', path, changedLines(result?.structuredPatch), tag)
+      block = await editBlock($, id, n, 'edited', path, changedLines(result?.structuredPatch), tag)
     } else if (e.tool === 'Write') {
       const result = ran.result as { type?: 'create' | 'update'; structuredPatch?: Patch } | undefined
       const created = result?.type === 'create'
       const changed = created ? e.content.replace(/\n$/, '').split('\n').map(line => `+${line}`) : changedLines(result?.structuredPatch)
-      block = await editBlock($, id, created ? 'created' : 'rewrote', path, changed, tag)
+      block = await editBlock($, id, n, created ? 'created' : 'rewrote', path, changed, tag)
     } else {
       const cell = e.cell_id ? ` ${ANSI.dim}(cell ${e.cell_id})${ANSI.off}` : ''
       const verb = e.edit_mode === 'insert' ? 'added a cell to' : e.edit_mode === 'delete' ? 'deleted a cell from' : 'edited'
       const changed = e.edit_mode === 'delete' ? [] : e.new_source.split('\n').map(line => `+${line}`)
-      block = await editBlock($, id, verb, path, changed, cell + tag)
+      block = await editBlock($, id, n, verb, path, changed, cell + tag)
     }
     lastLogged = id
     await appendLog($, block)
@@ -226,7 +228,7 @@ const closeWindow = ($: EngineInterface) =>
 end tell'`,
   ])
 
-const header = (run: BashRun) => `${mark(run.n)}${ANSI.cmd}$ ${run.command}${ANSI.off}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
+const header = (run: BashRun) => `${mark(run.n)}${ANSI.cmd}$ ${run.command.replace(/\n/g, `${ANSI.off}\n    ${ANSI.cmd}`)}${ANSI.off}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
 
 // The person's settings (the bash-feed rows in /config), set by register from its options.
 const settings = {
@@ -308,10 +310,14 @@ const wrapIndent = (line: string): string => {
   if (meaning > 0) return ' '.repeat([...visible(line.slice(0, meaning))].length)
   const plain = visible(line)
   if (plain.startsWith('# ')) return `${ANSI.dim}# `
+  // A command continues under its first character, after "§12 $ ".
+  const command = /^(§\d+ )?\$ /.exec(plain)
+  if (command) return ' '.repeat(command[0].length)
   return ' '.repeat((/^ */.exec(plain)?.[0].length ?? 0) + 2)
 }
 
-const wrap = (lines: string[], cols: number) => lines.flatMap(line => wrapLine(line, cols, wrapIndent(line)))
+const wrap = (lines: string[], cols: number) =>
+  lines.flatMap(line => line.split('\n')).flatMap(line => wrapLine(line, cols, wrapIndent(line)))
 
 const visible = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '')
 const rowsOf = (line: string, cols: number) => Math.max(1, Math.ceil([...visible(line)].length / cols))
