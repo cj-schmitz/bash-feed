@@ -4,6 +4,69 @@
   "description": "Streams each Bash command Claude runs, with color-coded output and short explanations, to a per-session Terminal window",
   "types": "./types/index.d.ts",
   "userConfig": {
+    "teacherLevel": {
+      "type": "string",
+      "title": "Explanations",
+      "description": "How much the teacher explains each command: beginner (every part), intermediate (only less common programs and flags), or off (no explanations and no Haiku calls).",
+      "options": [
+        "beginner",
+        "intermediate",
+        "off"
+      ],
+      "default": "beginner"
+    },
+    "language": {
+      "type": "string",
+      "title": "Explanation language",
+      "description": "The language the explanations and plain-English line are written in.",
+      "default": "English"
+    },
+    "showWhy": {
+      "type": "boolean",
+      "title": "Show why line",
+      "description": "Show Claude's one-line reason above each command, as a # comment.",
+      "default": true
+    },
+    "showSummary": {
+      "type": "boolean",
+      "title": "Show plain-English line",
+      "description": "Show the green one-sentence summary after each command's explanation.",
+      "default": true
+    },
+    "showRisk": {
+      "type": "boolean",
+      "title": "Show risk warnings",
+      "description": "Show a red warning line for commands that delete, overwrite, push, use sudo or send data out.",
+      "default": true
+    },
+    "showFileChanges": {
+      "type": "boolean",
+      "title": "Show file changes",
+      "description": "Show Claude's file edits (Edit, Write, notebook edits) with their diffs.",
+      "default": true
+    },
+    "outputRows": {
+      "type": "number",
+      "title": "Output rows per command",
+      "description": "Screen rows of output shown per command, wrapped lines included; the rest is saved and linked.",
+      "default": 20,
+      "min": 1,
+      "max": 500
+    },
+    "diffRows": {
+      "type": "number",
+      "title": "Diff rows per file change",
+      "description": "Screen rows of each file change's diff shown; the rest is saved and linked.",
+      "default": 10,
+      "min": 0,
+      "max": 500
+    },
+    "openOnStart": {
+      "type": "boolean",
+      "title": "Open window at session start",
+      "description": "Open the feed window behind Claude when a session starts. Off: open it with /bash-feed window.",
+      "default": true
+    },
     "retentionDays": {
       "type": "number",
       "title": "Keep logs for (days)",

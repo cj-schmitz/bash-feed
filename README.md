@@ -2,20 +2,37 @@
 
 A Claude Code mod that shows every Bash command Claude runs, with its output, in a separate Terminal window. Each session gets its own window. A short "teacher" explains each command's programs, flags and shell symbols as it runs.
 
-- Every shell command Claude sends: Bash calls, Monitor watches, and subagents' commands (tagged `[monitor]` / `[subagent]`)
-- Command in blue, output in plain text, errors in red, exit status green or red
+- Every shell command Claude sends: Bash calls, Monitor watches, and subagents' commands (tagged `[monitor]` / `[subagent]`), plus Claude's file edits with their diffs (`✎ edited … +12 −3`)
+- Each command opens with Claude's reason as a `# comment`, then a red `⚠` line if it can delete, overwrite, push or send data out
 - Explanations from Haiku: each part in yellow with a dim meaning, then one plain-English sentence in green
 - Background commands and monitors stream their output (`┆`) as it arrives, until the task ends
 - Output is cut at 20 screen rows (wrapped lines count); the rest is saved and linked: ⌘-click `▸ N more lines`
+- Every step is numbered `§12`: press ⌘F in the window, type `§` (⌥6), Enter, then ⌘G / ⇧⌘G to jump to the next / previous step
 - The window opens behind Claude when a session starts and closes when that session's Claude process exits
-- `/bash-feed-window` reopens the window; `/bash-feed` opens an in-chat pane instead
 
-## Logs and settings
+## Commands
+
+`/bash-feed` alone opens a menu. Or pass one of:
+
+- `on` / `off`: turn the feed on or off in every session (remembered)
+- `window`: reopen this session's window; `pane`: open the in-chat pane instead
+- `clear`: delete other sessions' logs and saved outputs; `clear all`: also empty this session's
+
+## Settings
+
+The bash-feed rows in `/config`:
+
+| Setting | Default | |
+| --- | --- | --- |
+| Explanations | beginner | `beginner`, `intermediate` (skips basics), or `off` (no Haiku calls) |
+| Explanation language | English | any language |
+| Show why line / plain-English line / risk warnings / file changes | on | each can be turned off |
+| Output rows per command | 20 | rows shown before the link |
+| Diff rows per file change | 10 | rows shown before the link |
+| Open window at session start | on | off: open it with `/bash-feed window` |
+| Keep logs for (days) | 90 | 0 keeps them forever |
 
 Logs and saved outputs live in `~/.claude/bash-feed/`.
-
-- **Keep logs for (days)**: the bash-feed row in `/config`. Default 90; 0 keeps them forever. Older files are deleted when a session starts.
-- `/bash-feed-clear` deletes other sessions' logs and outputs; `/bash-feed-clear all` also empties this session's.
 
 macOS and Terminal.app only. The first time, macOS may ask to let Claude Code control Terminal.
 

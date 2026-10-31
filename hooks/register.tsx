@@ -20,11 +20,26 @@ const windowTitle = () => `Bash feed ${sessionId.slice(0, 8)}`
 const ANSI = { say: '\x1b[3;92m', cmd: '\x1b[1;36m', err: '\x1b[31m', ok: '\x1b[2;32m', bad: '\x1b[1;31m', dim: '\x1b[2m', term: '\x1b[33m', more: '\x1b[4;34m', edit: '\x1b[1;34m', add: '\x1b[32m', del: '\x1b[31m', off: '\x1b[0m' }
 // Which run the log last wrote, so a finished run repeats its header only when another came between.
 let lastLogged = ''
+// Whether the feed runs; kept in the plugin's store, so it holds across sessions.
+let enabled = true
+// Each command and file change gets the next step number, written "§12": ⌘F § (⌥6) in the
+// window, then ⌘G / ⇧⌘G, jumps from step to step.
+let step = 0
+const mark = (n: number | undefined) => (n ? `${ANSI.dim}§${n}${ANSI.off} ` : '')
 // Log writes run one after another, so a slow lesson never lets a later block jump ahead.
 let queue: Promise<unknown> = Promise.resolve()
 const enqueue = (write: () => Promise<unknown>) => {
   queue = queue.then(write).catch(() => {})
 }
+
+const LEVELS = {
+  beginner: 'Explain for a beginner: include basics such as cd, ls, pipes, && and quotes.',
+  intermediate: 'The reader knows the basics (cd, ls, cat, echo, pipes, &&, ;, quotes, redirects): skip them and explain only less common programs, flags and syntax, at most 5 lines.',
+}
+
+const teacher = () => `${TEACHER}
+${LEVELS[settings.teacherLevel === 'intermediate' ? 'intermediate' : 'beginner']}
+Write every meaning, the RISK line and the SAY line in ${settings.language}; keep the parts, RISK and SAY themselves as written.`
 
 const TEACHER = `You explain shell commands to someone learning the terminal on macOS.
 List the parts of the command that matter: each program, important flags/options, and shell
@@ -51,10 +66,11 @@ No intro, no closing, no markdown.`
 const lessons = new Map<string, Promise<string[]>>()
 
 const lessonFor = ($: EngineInterface, command: string): Promise<string[]> => {
+  if (settings.teacherLevel === 'off') return Promise.resolve([])
   const known = lessons.get(command)
   if (known) return known
   const asked = $.model
-    .complete({ model: 'haiku', system: TEACHER, prompt: command, maxTokens: 400, timeoutMs: 20_000 })
+    .complete({ model: 'haiku', system: teacher(), prompt: command, maxTokens: 400, timeoutMs: 20_000 })
     .then(reply => {
       if (!reply.isAnswered) return []
       const parts = reply.text
@@ -77,9 +93,9 @@ const lessonFor = ($: EngineInterface, command: string): Promise<string[]> => {
       const risk = parts.find(([part]) => part === 'RISK')
       // The warning leads; a blank line keeps the summary apart from the output that follows.
       return [
-        ...(risk ? [`  ${ANSI.bad}⚠ ${risk[1]}${ANSI.off}`] : []),
+        ...(risk && settings.showRisk ? [`  ${ANSI.bad}⚠ ${risk[1]}${ANSI.off}`] : []),
         ...terms,
-        ...(say ? [`  ${ANSI.say}→ ${say[1]}${ANSI.off}`, ''] : []),
+        ...(say && settings.showSummary ? [`  ${ANSI.say}→ ${say[1]}${ANSI.off}`, ''] : []),
       ]
     })
     .catch(() => [])
@@ -141,8 +157,6 @@ end tell`,
   )
 }
 
-// Diff rows shown per file change; a longer diff is saved whole and linked.
-const SHOW_DIFF = 10
 
 const home = (path: string) => path.replace(/^\/Users\/[^/]+/, '~')
 
@@ -153,9 +167,9 @@ const editBlock = async ($: EngineInterface, id: string, verb: string, path: str
   const added = changed.filter(line => line.startsWith('+')).length
   const removed = changed.filter(line => line.startsWith('-')).length
   const counts = `${added ? ` ${ANSI.add}+${added}${ANSI.off}` : ''}${removed ? ` ${ANSI.del}−${removed}${ANSI.off}` : ''}`
-  const out = [`${ANSI.edit}✎ ${verb} ${home(path)}${ANSI.off}${detail}${counts}`]
+  const out = [`${mark(++step)}${ANSI.edit}✎ ${verb} ${home(path)}${ANSI.off}${detail}${counts}`]
   const rows = changed.map(line => `  ${line.startsWith('+') ? ANSI.add : ANSI.del}${line}${ANSI.off}`)
-  const { shown, hidden } = fitRows(rows, await columns($), SHOW_DIFF)
+  const { shown, hidden } = fitRows(rows, await columns($), settings.diffRows)
   out.push(...shown)
   if (hidden > 0) {
     const file = await saveOutput($, id, changed.join('\n'))
@@ -169,6 +183,7 @@ const changedLines = (patch: Patch | undefined) =>
 
 const logEdit = async ($: EngineInterface, e: Extract<ToolCallInput, { tool: 'Edit' | 'Write' | 'NotebookEdit' }>, next: (e: ToolCallInput) => Promise<ToolCallResult>) => {
   const ran = await next(e)
+  if (!enabled || !settings.showFileChanges) return ran
   const id = e.tool_use_id
   const path = e.tool === 'NotebookEdit' ? e.notebook_path : e.file_path
   const tag = e.agentId ? ` ${ANSI.dim}[subagent]${ANSI.off}` : ''
@@ -176,7 +191,7 @@ const logEdit = async ($: EngineInterface, e: Extract<ToolCallInput, { tool: 'Ed
     let block: string
     if (ran.deny !== undefined || ran.isError === true) {
       const why = (ran.deny ?? ran.text ?? 'failed').split('\n')[0]!.replace(/<\/?tool_use_error>/g, '')
-      block = `${ANSI.edit}✎ ${home(path)}${ANSI.off}${tag}\n${ANSI.bad}  ✗ not changed: ${why}${ANSI.off}\n\n`
+      block = `${mark(++step)}${ANSI.edit}✎ ${home(path)}${ANSI.off}${tag}\n${ANSI.bad}  ✗ not changed: ${why}${ANSI.off}\n\n`
     } else if (e.tool === 'Edit') {
       const result = ran.result as { structuredPatch?: Patch } | undefined
       block = await editBlock($, id, 'edited', path, changedLines(result?.structuredPatch), tag)
@@ -197,11 +212,33 @@ const logEdit = async ($: EngineInterface, e: Extract<ToolCallInput, { tool: 'Ed
   return ran
 }
 
-const header = (run: BashRun) => `${ANSI.cmd}$ ${run.command}${ANSI.off}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
+// Stops this session's tail and closes its window.
+const closeWindow = ($: EngineInterface) =>
+  $.process.run([
+    '/bin/sh', '-c', `pkill -f "[t]ail -n 300 -F .*bash-feed/${sessionId}.log"; sleep 0.2; osascript -e 'tell application "Terminal"
+  repeat with w in (get windows)
+    try
+      if custom title of selected tab of w is "${windowTitle()}" then close w
+    end try
+  end repeat
+end tell'`,
+  ])
 
-// Screen rows of output the window shows per command, counting wrapped lines; a longer
-// output is saved whole and linked.
-const SHOW = 20
+const header = (run: BashRun) => `${mark(run.n)}${ANSI.cmd}$ ${run.command}${ANSI.off}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
+
+// The person's settings (the bash-feed rows in /config), set by register from its options.
+const settings = {
+  teacherLevel: 'beginner' as 'beginner' | 'intermediate' | 'off',
+  language: 'English',
+  showWhy: true,
+  showSummary: true,
+  showRisk: true,
+  showFileChanges: true,
+  // Screen rows of output shown per command, wrapped lines counted; the rest is saved and linked.
+  outputRows: 20,
+  diffRows: 10,
+  openOnStart: true,
+}
 
 // The feed window's width in columns, asked of Terminal at most every 15 seconds.
 let width = { cols: 100, at: -Infinity }
@@ -266,7 +303,7 @@ const logBlock = async ($: EngineInterface, run: BashRun): Promise<string> => {
     ...linesIn(run.stdout).map(text => `  ${text}`),
     ...linesIn(run.stderr).map(text => `${ANSI.err}  ${text}${ANSI.off}`),
   ]
-  const { shown, hidden } = fitRows(body, await columns($), SHOW)
+  const { shown, hidden } = fitRows(body, await columns($), settings.outputRows)
   out.push(...shown)
   if (hidden > 0) {
     const file = await saveOutput($, run.id, [run.stdout, run.stderr].filter(text => text.trim()).join('\n'))
@@ -281,32 +318,73 @@ const logBlock = async ($: EngineInterface, run: BashRun): Promise<string> => {
 // Shell snippet: the feed folder's size, as du prints it (e.g. 5.1M).
 const SIZE = `du -sh "$HOME/.claude/bash-feed" 2>/dev/null | cut -f1`
 
+const clearLogs = async ($: EngineInterface, all: boolean) => {
+  const keep = sessionId.slice(0, 8)
+  // Other sessions' logs and outputs go; this session's log is emptied, not deleted,
+  // so its open window keeps following it.
+  const script = `d="$HOME/.claude/bash-feed"; [ -d "$d" ] || exit 0
+before=$(${SIZE})
+find "$d" -maxdepth 1 -type f -name '*.log' ! -name '${sessionId}.log' -delete
+find "$d/out" -type f -name '*.txt' ! -name '${keep}-*' -delete 2>/dev/null
+${all ? `: > "$d/${sessionId}.log"; rm -f "$d/out/${keep}-"*.txt` : ''}
+echo "$before $(${SIZE})"`
+  const ran = await queue.then(() => $.process.run(['/bin/sh', '-c', script]))
+  const [before = '?', after = '?'] = ran.stdout.trim().split(/\s+/)
+  if (all) {
+    lastLogged = ''
+    step = 0
+  }
+  return all
+    ? `Deleted all Bash feed logs (${before} → ${after}).`
+    : `Deleted other sessions' Bash feed logs (${before} → ${after}). This session's log stays.`
+}
+
+const MENU = {
+  on: 'Turn on',
+  off: 'Turn off',
+  window: 'Reopen the window',
+  clear: "Clear other sessions' logs",
+  all: 'Clear all logs',
+} as const
+
 export const register: Register = (on, options) => {
   const retentionDays = Math.max(0, Math.floor(Number(options.retentionDays ?? 90)))
+  const flag = (key: keyof typeof settings, fallback: boolean) => (typeof options[key] === 'boolean' ? (options[key] as boolean) : fallback)
+  const count = (key: string, fallback: number, min: number) => {
+    const value = Math.floor(Number(options[key]))
+    return Number.isFinite(value) ? Math.max(min, value) : fallback
+  }
+  const level = String(options.teacherLevel ?? 'beginner')
+  Object.assign(settings, {
+    teacherLevel: level === 'intermediate' || level === 'off' ? level : 'beginner',
+    language: String(options.language ?? '').trim() || 'English',
+    showWhy: flag('showWhy', true),
+    showSummary: flag('showSummary', true),
+    showRisk: flag('showRisk', true),
+    showFileChanges: flag('showFileChanges', true),
+    outputRows: count('outputRows', 20, 1),
+    diffRows: count('diffRows', 10, 0),
+    openOnStart: flag('openOnStart', true),
+  })
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'bash-feed',
-      description: 'Open the pane that streams Bash commands and their output',
+      description: 'Turn the Bash feed on or off, reopen its window, or clear its logs',
+      argumentHint: '[on|off|window|pane|clear|clear all]',
     })
-    await $.command.register({
-      name: 'bash-feed-window',
-      description: 'Open a separate Terminal window that streams Bash commands and their output',
-    })
-    await $.command.register({
-      name: 'bash-feed-clear',
-      description: "Delete Bash feed logs and saved outputs from other sessions ('all' also empties this session's)",
-      argumentHint: '[all]',
-    })
-    void $.ui.open({ id: PANE, title: 'Bash feed' })
     sessionId = await $.session.id()
+    enabled = (await $.store.get('enabled')) !== false
+    // Step numbers carry on from the highest already in this session's log.
+    const last = await $.process.run(['/bin/sh', '-c', `grep -ao '§[0-9]*' "${logFile()}" 2>/dev/null | tr -d '§' | sort -n | tail -1`])
+    step = Number(last.stdout.trim()) || 0
     // Session logs and saved outputs older than the retention setting are deleted (0 keeps all).
     if (retentionDays > 0) {
       enqueue(() =>
         $.process.run(['/bin/sh', '-c', `[ -d "$HOME/.claude/bash-feed" ] && find "$HOME/.claude/bash-feed" -type f \( -name '*.log' -o -name '*.txt' \) -mtime +${retentionDays} -delete`]),
       )
     }
-    if (e.isInteractive) {
+    if (e.isInteractive && enabled && settings.openOnStart) {
       enqueue(async () => {
         // The header goes in once per session file, not again on each reload.
         await $.process.run(['/bin/sh', '-c', `[ -e "${logFile()}" ] || { mkdir -p "$HOME/.claude/bash-feed" && cat > "${logFile()}"; }`], {
@@ -319,44 +397,51 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'bash-feed' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'Bash feed' })
-
-    return { text: 'Bash feed opened.' }
-  })
-
-  on('command.run', { command: 'bash-feed-clear' }, async ($, e) => {
+  on('command.run', { command: 'bash-feed' }, async ($, e) => {
     if (!sessionId) sessionId = await $.session.id()
-    const all = e.args.trim().toLowerCase() === 'all'
-    const keep = sessionId.slice(0, 8)
-    // Other sessions' logs and outputs go; this session's log is emptied, not deleted,
-    // so its open window keeps following it.
-    const script = `d="$HOME/.claude/bash-feed"; [ -d "$d" ] || exit 0
-before=$(${SIZE})
-find "$d" -maxdepth 1 -type f -name '*.log' ! -name '${sessionId}.log' -delete
-find "$d/out" -type f -name '*.txt' ! -name '${keep}-*' -delete 2>/dev/null
-${all ? `: > "$d/${sessionId}.log"; rm -f "$d/out/${keep}-"*.txt` : ''}
-echo "$before $(${SIZE})"`
-    const ran = await queue.then(() => $.process.run(['/bin/sh', '-c', script]))
-    const [before = '?', after = '?'] = ran.stdout.trim().split(/\s+/)
-    if (all) lastLogged = ''
-    return {
-      text: all
-        ? `Deleted all Bash feed logs (${before} → ${after}).`
-        : `Deleted other sessions' Bash feed logs (${before} → ${after}). This session's log stays; use /bash-feed-clear all to empty it too.`,
+    let choice = e.args.trim().toLowerCase()
+    if (!choice) {
+      // No argument: a menu, like /permissions.
+      const options = enabled ? [MENU.off, MENU.window, MENU.clear, MENU.all] : [MENU.on, MENU.clear, MENU.all]
+      const size = (await $.process.run(['/bin/sh', '-c', SIZE])).stdout.trim() || '0B'
+      const picked = await $.ui
+        .ask(`The Bash feed is ${enabled ? 'on' : 'off'} (logs use ${size}). What do you want to do?`, { header: 'Bash feed', options })
+        .catch(() => '')
+      choice = (Object.keys(MENU) as (keyof typeof MENU)[]).find(key => MENU[key] === picked) ?? ''
+      if (choice === 'all') choice = 'clear all'
+      if (!choice) return { text: 'Bash feed unchanged.' }
     }
-  })
-
-  on('command.run', { command: 'bash-feed-window' }, async $ => {
-    if (!sessionId) sessionId = await $.session.id()
-    await openWindow($, false)
-
-    return { text: 'Bash feed window opened.' }
+    switch (choice) {
+      case 'on':
+        enabled = true
+        await $.store.set('enabled', true)
+        await queue.then(() => openWindow($, false))
+        return { text: 'Bash feed is on.' }
+      case 'off':
+        enabled = false
+        await $.store.set('enabled', false)
+        await queue.then(() => closeWindow($))
+        return { text: 'Bash feed is off in every session until you turn it on with /bash-feed on.' }
+      case 'window':
+        if (!enabled) return { text: 'The Bash feed is off. Turn it on with /bash-feed on.' }
+        await openWindow($, false)
+        return { text: 'Bash feed window opened.' }
+      case 'pane':
+        await $.ui.open({ id: PANE, title: 'Bash feed' })
+        return { text: 'Bash feed pane opened.' }
+      case 'clear':
+        return { text: await clearLogs($, false) }
+      case 'clear all':
+        return { text: await clearLogs($, true) }
+      default:
+        return { text: 'Use /bash-feed with on, off, window, pane, clear or clear all, or with nothing for the menu.' }
+    }
   })
 
   // Every shell command Claude sends: Bash calls and Monitor watches, from the main
   // loop and from subagents alike.
   on('tool.call', async ($, e, next) => {
+    if (!enabled) return next(e)
     if (e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') return logEdit($, e, next)
     const command = e.tool === 'Bash' ? e.command : e.tool === 'Monitor' ? e.command : undefined
     if (!command) return next(e)
@@ -364,14 +449,14 @@ echo "$before $(${SIZE})"`
     const id = e.tool_use_id
     if (!sessionId) sessionId = await $.session.id()
     const tags = [e.tool === 'Monitor' && 'monitor', e.agentId && 'subagent'].filter(Boolean)
-    const run: BashRun = { id, command, isDone: false, stdout: '', stderr: '', ...(tags.length ? { from: tags.join(', ') } : {}) }
+    const run: BashRun = { id, n: ++step, command, isDone: false, stdout: '', stderr: '', ...(tags.length ? { from: tags.join(', ') } : {}) }
     await update($, runs, list => [...list, run].slice(-MAX_RUNS))
     const lesson = lessonFor($, run.command)
     enqueue(async () => {
       const lines = await lesson
       lastLogged = id
       // Claude's own one-line reason for the command, written as a shell comment.
-      const why = description ? [`${ANSI.dim}# ${description}${ANSI.off}`] : []
+      const why = description && settings.showWhy ? [`${ANSI.dim}# ${description}${ANSI.off}`] : []
       await appendLog($, [...why, header(run), ...lines, ''].join('\n'))
     })
 

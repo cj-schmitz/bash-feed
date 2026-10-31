@@ -1,5 +1,7 @@
 export type BashRun = {
   id: string
+  /** The step number shown as §n in the window. */
+  n?: number
   command: string
   isDone: boolean
   stdout: string
