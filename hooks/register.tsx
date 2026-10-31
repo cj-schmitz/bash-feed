@@ -343,6 +343,9 @@ const formatCommand = (command: string, indent: string, cols: number): string =>
   // How deep inside do…done, then…fi and case…esac the next line is; each level indents two.
   let depth = 0
   const lineStart = () => `\n${indent}${'  '.repeat(Math.max(0, depth))}`
+  // Starts a new line, unless one was just started (a break after "do" meeting the
+  // command's own newline), so no blank lines appear.
+  const breakLine = (current: string) => current.replace(/\n[ \t]*$/, '').replace(/[ \t]+$/, '') + lineStart()
   const nextWord = (k: number) => tokens.slice(k + 1).find(next => next.kind !== 'space')
   const OPENS = new Set(['do', 'then', 'else', 'elif'])
   const CLOSES = new Set(['done', 'fi', 'esac', 'else', 'elif'])
@@ -354,11 +357,14 @@ const formatCommand = (command: string, indent: string, cols: number): string =>
     skipSpace = false
     let colour: string = SYNTAX.word
     switch (token.kind) {
-      case 'newline':
-        out += `\n${indent}`
+      case 'newline': {
+        const next = nextWord(k)
+        if (next?.kind === 'word' && CLOSES.has(next.text)) depth--
+        out = breakLine(out)
         expectProgram = true
         skipSpace = true
         continue
+      }
       case 'heredoc':
         out += token.text
           .split('\n')
@@ -374,9 +380,9 @@ const formatCommand = (command: string, indent: string, cols: number): string =>
             out += `${SYNTAX.operator};${ANSI.off} `
           } else if (token.text === ';') {
             if (next?.kind === 'word' && CLOSES.has(next.text)) depth--
-            out += `${SYNTAX.operator};${ANSI.off}${lineStart()}`
+            out = breakLine(`${out}${SYNTAX.operator};${ANSI.off}`)
           } else {
-            out = `${out.replace(/[ \t]+$/, '')}${lineStart()}${SYNTAX.operator}${token.text}${ANSI.off} `
+            out = `${breakLine(out)}${SYNTAX.operator}${token.text}${ANSI.off} `
           }
           skipSpace = true
           continue
@@ -407,7 +413,7 @@ const formatCommand = (command: string, indent: string, cols: number): string =>
           if (isLong && OPENS.has(token.text)) {
             // The body of a loop or an if goes on the next lines, one level in.
             depth++
-            out += `${colour}${token.text}${ANSI.off}${lineStart()}`
+            out = breakLine(`${out}${colour}${token.text}${ANSI.off}`)
             skipSpace = true
             expectProgram = true
             continue
