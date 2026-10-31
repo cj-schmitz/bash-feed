@@ -17,7 +17,7 @@ const runs = atom({ plugin: 'bash-feed', key: 'runs' } as const, [], {
 let sessionId = ''
 const logFile = () => `$HOME/.claude/bash-feed/${sessionId || 'unknown'}.log`
 const windowTitle = () => `Bash feed ${sessionId.slice(0, 8)}`
-const ANSI = { say: '\x1b[1;37m', cmd: '\x1b[1;36m', err: '\x1b[31m', ok: '\x1b[2;32m', bad: '\x1b[1;31m', dim: '\x1b[2m', term: '\x1b[33m', off: '\x1b[0m' }
+const ANSI = { say: '\x1b[1;37m', cmd: '\x1b[1;36m', err: '\x1b[31m', ok: '\x1b[2;32m', bad: '\x1b[1;31m', dim: '\x1b[2m', term: '\x1b[33m', more: '\x1b[4;34m', off: '\x1b[0m' }
 // Which run the log last wrote, so a finished run repeats its header only when another came between.
 let lastLogged = ''
 // Log writes run one after another, so a slow lesson never lets a later block jump ahead.
@@ -132,11 +132,36 @@ end tell`,
 
 const header = (run: BashRun) => `${ANSI.cmd}$ ${run.command}${ANSI.off}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
 
-const logBlock = (run: BashRun): string => {
+// Output lines the window shows per command; a longer output is saved whole and linked.
+const SHOW = 20
+
+const linesIn = (text: string): string[] => {
+  const trimmed = text.replace(/\s+$/, '')
+  return trimmed === '' ? [] : trimmed.split('\n')
+}
+
+// Saves a command's full output beside the logs and answers the file's absolute path.
+const saveOutput = async ($: EngineInterface, id: string, text: string): Promise<string> => {
+  const saved = await $.process.run(
+    ['/bin/sh', '-c', `d="$HOME/.claude/bash-feed/out" && mkdir -p "$d" && f="$d/${sessionId.slice(0, 8)}-${id}.txt" && cat > "$f" && printf %s "$f"`],
+    { stdin: text },
+  )
+  return saved.stdout
+}
+
+const logBlock = async ($: EngineInterface, run: BashRun): Promise<string> => {
   const out: string[] = []
   if (lastLogged !== run.id) out.push(header(run))
-  for (const text of clip(run.stdout)) out.push(`  ${text}`)
-  for (const text of clip(run.stderr)) out.push(`${ANSI.err}  ${text}${ANSI.off}`)
+  const body = [
+    ...linesIn(run.stdout).map(text => `  ${text}`),
+    ...linesIn(run.stderr).map(text => `${ANSI.err}  ${text}${ANSI.off}`),
+  ]
+  if (body.length > SHOW) {
+    const file = await saveOutput($, run.id, [run.stdout, run.stderr].filter(text => text.trim()).join('\n'))
+    out.push(...body.slice(0, SHOW), `${ANSI.more}  ▸ ${body.length - SHOW} more lines · ⌘-click: file://${encodeURI(file)}${ANSI.off}`)
+  } else {
+    out.push(...body)
+  }
   if (run.note) out.push(`${ANSI.bad}  ✗ ${run.note}${ANSI.off}`)
   else if (run.exitCode === 0) out.push(`${ANSI.ok}  ✓ exit 0${ANSI.off}`)
   else out.push(`${ANSI.bad}  ✗ exit ${run.exitCode ?? '?'}${ANSI.off}`)
@@ -155,9 +180,9 @@ export const register: Register = on => {
     })
     void $.ui.open({ id: PANE, title: 'Bash feed' })
     sessionId = await $.session.id()
-    // Session logs last modified more than 90 days ago are deleted.
+    // Session logs and saved outputs last modified more than 90 days ago are deleted.
     enqueue(() =>
-      $.process.run(['/bin/sh', '-c', `[ -d "$HOME/.claude/bash-feed" ] && find "$HOME/.claude/bash-feed" -name '*.log' -type f -mtime +90 -delete`]),
+      $.process.run(['/bin/sh', '-c', `[ -d "$HOME/.claude/bash-feed" ] && find "$HOME/.claude/bash-feed" -type f \( -name '*.log' -o -name '*.txt' \) -mtime +90 -delete`]),
     )
     if (e.isInteractive) {
       enqueue(async () => {
@@ -229,7 +254,7 @@ export const register: Register = on => {
       list.map(one => (one.id === id ? { ...one, ...done, isDone: true } : one)),
     )
     enqueue(async () => {
-      const block = logBlock({ ...run, ...done, isDone: true })
+      const block = await logBlock($, { ...run, ...done, isDone: true })
       lastLogged = id
       await appendLog($, block)
       // A background command or monitor keeps writing after the call returns: a detached

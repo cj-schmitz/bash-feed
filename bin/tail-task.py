@@ -4,11 +4,13 @@ Usage: tail-task.py <task-id> <log-file> <label> <claude-pid>
 The task's file ends with "[exited with code N]" or "[killed]"; the watch also stops
 when the Claude process exits, or after six hours.
 """
-import glob, os, re, sys, time
+import glob, os, re, shutil, sys, time
+from urllib.parse import quote
 
 task, log, label, pid = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-DIM, BAR, BAD, OFF = '\x1b[2m', '\x1b[35m', '\x1b[1;31m', '\x1b[0m'
-MAX_LINES = 500
+DIM, BAR, BAD, MORE, OFF = '\x1b[2m', '\x1b[35m', '\x1b[1;31m', '\x1b[4;34m', '\x1b[0m'
+# Lines the window shows per task; the whole output is saved beside the logs and linked.
+SHOW = 20
 END = re.compile(r'^\[(?:exited with code (-?\d+)|(killed))\]$')
 
 
@@ -66,12 +68,20 @@ while time.time() < deadline:
         if not line.strip():
             pending_blank += 1
             continue
-        if shown < MAX_LINES:
+        if shown < SHOW:
             out += [f'{BAR}  ┆{OFF}\n'] * pending_blank + [f'{BAR}  ┆{OFF} {line}\n']
-        elif shown == MAX_LINES:
-            out.append(f'{DIM}  ┆ … more output in {path}{OFF}\n')
+        elif shown == SHOW:
+            out.append(f'{DIM}  ┆ … more output; a link to all of it follows when the task ends{OFF}\n')
         shown += 1
         pending_blank = 0
+    if end or not alive():
+        if shown > SHOW:
+            # The task file lives in a temp folder; a copy beside the logs outlasts it.
+            saved_dir = os.path.join(os.path.dirname(log), 'out')
+            os.makedirs(saved_dir, exist_ok=True)
+            saved = os.path.join(saved_dir, f'{os.path.basename(log)[:8]}-{task}.txt')
+            shutil.copyfile(path, saved)
+            out.append(f'{MORE}  ▸ {shown - SHOW} more lines · ⌘-click: file://{quote(saved)}{OFF}\n')
     if end:
         code = end.group(1)
         if code == '0':
