@@ -967,9 +967,9 @@ export const register: Register = (on, options) => {
   // Every shell command Claude sends: Bash calls and Monitor watches, from the main
   // loop and from subagents alike.
   on('tool.call', async ($, e, next) => {
-    // A fault in the feed never stops Claude's command: the call runs once, logged or not.
+    // A fault in the feed never stops Claude's command: the call runs once, unchanged, logged or not.
     let ran: Promise<ToolCallResult> | undefined
-    const once = (input: ToolCallInput) => (ran ??= next(input))
+    const once = () => (ran ??= next(e))
     return logCall($, e, once).catch(() => ran ?? next(e))
   })
 
