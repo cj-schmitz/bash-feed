@@ -15,12 +15,13 @@ A Claude Code mod that shows every Bash command Claude runs, with its output, in
 `/bash-feed` alone opens a menu. Or pass one of:
 
 - `on` / `off`: turn the feed on or off in every session (remembered)
+- `settings`: change the settings below in four short dialogs (what's shown, explanations, output length, window and logs)
 - `window`: reopen this session's window; `pane`: open the in-chat pane instead
 - `clear`: delete other sessions' logs and saved outputs; `clear all`: also empty this session's
 
 ## Settings
 
-The bash-feed rows in `/config`:
+`/bash-feed settings`, or the bash-feed rows in `/config`:
 
 | Setting | Default | |
 | --- | --- | --- |

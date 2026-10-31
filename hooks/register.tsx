@@ -239,6 +239,7 @@ const settings = {
   outputRows: 20,
   diffRows: 10,
   openOnStart: true,
+  retentionDays: 90,
 }
 
 // The feed window's width in columns, asked of Terminal at most every 15 seconds.
@@ -340,16 +341,86 @@ echo "$before $(${SIZE})"`
     : `Deleted other sessions' Bash feed logs (${before} → ${after}). This session's log stays.`
 }
 
+// Changes one of the mod's /config rows, as the menu would; answers why it did not, if it did not.
+const setOption = async ($: EngineInterface, field: string, value: string | number | boolean): Promise<string | undefined> => {
+  const rows = await $.config.list()
+  const row = rows.find(one => one.key.startsWith('bash-feed') && one.key.endsWith(`.${field}`))
+  if (!row) return `the ${field} setting was not found in /config`
+  const set = await $.config.set({ key: row.key, value })
+  return set.deny
+}
+
+// Asks one question; resolves to the label picked, or '' when the dialog was dismissed.
+const ask = ($: EngineInterface, question: string, options: string[], multiSelect = false) =>
+  $.ui.ask(question, { header: 'Bash feed', options, ...(multiSelect ? { multiSelect: true as const } : {}) }).catch(() => '')
+
+const onOff = (on: boolean) => (on ? 'on' : 'off')
+
+// The settings submenu: four groups, each a question or two. Answers what changed.
+const settingsMenu = async ($: EngineInterface): Promise<string> => {
+  const group = await ask($, 'Which settings?', ["What's shown", 'Explanations', 'Output length', 'Window and logs'])
+  const done = async (field: string, value: string | number | boolean, said: string) => {
+    const denied = await setOption($, field, value)
+    return denied ? `Not changed: ${denied}.` : said
+  }
+  if (group === "What's shown") {
+    const SHOWN = { showWhy: 'Why line', showSummary: 'Plain-English line', showRisk: 'Risk warnings', showFileChanges: 'File changes' } as const
+    const now = (Object.keys(SHOWN) as (keyof typeof SHOWN)[]).map(key => `${SHOWN[key]} ${onOff(settings[key])}`).join(' · ')
+    const picked = await ask($, `Pick what to show; the rest is hidden. Now: ${now}.`, Object.values(SHOWN), true)
+    if (!picked) return 'Bash feed settings unchanged.'
+    const chosen = picked.split(',').map(one => one.trim())
+    for (const key of Object.keys(SHOWN) as (keyof typeof SHOWN)[]) {
+      const denied = await setOption($, key, chosen.includes(SHOWN[key]))
+      if (denied) return `Not changed: ${denied}.`
+    }
+    return `Bash feed now shows: ${chosen.join(', ') || 'none of these'}.`
+  }
+  if (group === 'Explanations') {
+    const picked = await ask($, `Explanations are ${settings.teacherLevel}, in ${settings.language}. Change to:`, ['Beginner', 'Intermediate', 'Off (no Haiku calls)', 'Change language'])
+    if (!picked) return 'Bash feed settings unchanged.'
+    if (picked === 'Change language') {
+      const language = (await ask($, `Explanations are in ${settings.language}. Which language? (Other: type any)`, ['English', 'Spanish', 'French', 'German'])).trim()
+      return language ? done('language', language, `Explanations will be in ${language}.`) : 'Bash feed settings unchanged.'
+    }
+    const level = picked.startsWith('Off') ? 'off' : picked.toLowerCase()
+    return done('teacherLevel', level, `Explanations: ${level}.`)
+  }
+  if (group === 'Output length') {
+    const which = await ask($, `Rows shown before the "more lines" link. Now: output ${settings.outputRows}, diffs ${settings.diffRows}. Change:`, ['Output rows per command', 'Diff rows per file change'])
+    if (!which) return 'Bash feed settings unchanged.'
+    const field = which.startsWith('Output') ? 'outputRows' : 'diffRows'
+    const answer = await ask($, `${which}? (Other: type a number)`, ['10', '20', '40', '80'])
+    const rows = Math.floor(Number(answer))
+    if (!answer || !Number.isFinite(rows) || rows < (field === 'outputRows' ? 1 : 0)) return 'Bash feed settings unchanged.'
+    return done(field, rows, `${which}: ${rows}.`)
+  }
+  if (group === 'Window and logs') {
+    const picked = await ask($, `Window opens at session start: ${onOff(settings.openOnStart)}. Logs kept for: ${settings.retentionDays ? `${settings.retentionDays} days` : 'ever'}. Change:`, [
+      settings.openOnStart ? "Don't open the window at start" : 'Open the window at start',
+      'How long to keep logs',
+    ])
+    if (!picked) return 'Bash feed settings unchanged.'
+    if (picked !== 'How long to keep logs') {
+      return done('openOnStart', !settings.openOnStart, `The window will ${settings.openOnStart ? 'not open' : 'open'} when a session starts.`)
+    }
+    const KEEP = { '30 days': 30, '90 days': 90, '1 year': 365, Forever: 0 } as Record<string, number>
+    const kept = await ask($, 'Keep logs for how long? (Other: type a number of days)', Object.keys(KEEP))
+    const days = kept in KEEP ? KEEP[kept]! : Math.floor(Number(kept))
+    if (!kept || !Number.isFinite(days) || days < 0) return 'Bash feed settings unchanged.'
+    return done('retentionDays', days, days ? `Logs will be kept for ${days} days.` : 'Logs will be kept forever.')
+  }
+  return 'Bash feed settings unchanged.'
+}
+
 const MENU = {
   on: 'Turn on',
   off: 'Turn off',
   window: 'Reopen the window',
-  clear: "Clear other sessions' logs",
-  all: 'Clear all logs',
+  settings: 'Settings',
+  clear: 'Clear logs',
 } as const
 
 export const register: Register = (on, options) => {
-  const retentionDays = Math.max(0, Math.floor(Number(options.retentionDays ?? 90)))
   const flag = (key: keyof typeof settings, fallback: boolean) => (typeof options[key] === 'boolean' ? (options[key] as boolean) : fallback)
   const count = (key: string, fallback: number, min: number) => {
     const value = Math.floor(Number(options[key]))
@@ -366,13 +437,15 @@ export const register: Register = (on, options) => {
     outputRows: count('outputRows', 20, 1),
     diffRows: count('diffRows', 10, 0),
     openOnStart: flag('openOnStart', true),
+    retentionDays: count('retentionDays', 90, 0),
   })
+  const retentionDays = settings.retentionDays
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'bash-feed',
-      description: 'Turn the Bash feed on or off, reopen its window, or clear its logs',
-      argumentHint: '[on|off|window|pane|clear|clear all]',
+      description: 'Turn the Bash feed on or off, change its settings, reopen its window, or clear its logs',
+      argumentHint: '[on|off|window|settings|pane|clear|clear all]',
     })
     sessionId = await $.session.id()
     enabled = (await $.store.get('enabled')) !== false
@@ -403,13 +476,16 @@ export const register: Register = (on, options) => {
     let choice = e.args.trim().toLowerCase()
     if (!choice) {
       // No argument: a menu, like /permissions.
-      const options = enabled ? [MENU.off, MENU.window, MENU.clear, MENU.all] : [MENU.on, MENU.clear, MENU.all]
+      const options = enabled ? [MENU.off, MENU.window, MENU.settings, MENU.clear] : [MENU.on, MENU.settings, MENU.clear]
       const size = (await $.process.run(['/bin/sh', '-c', SIZE])).stdout.trim() || '0B'
       const picked = await $.ui
         .ask(`The Bash feed is ${enabled ? 'on' : 'off'} (logs use ${size}). What do you want to do?`, { header: 'Bash feed', options })
         .catch(() => '')
       choice = (Object.keys(MENU) as (keyof typeof MENU)[]).find(key => MENU[key] === picked) ?? ''
-      if (choice === 'all') choice = 'clear all'
+      if (choice === 'clear') {
+        const which = await ask($, 'Clear which logs?', ["Other sessions' logs", 'All logs, this session too'])
+        choice = which.startsWith('All') ? 'clear all' : which ? 'clear' : ''
+      }
       if (!choice) return { text: 'Bash feed unchanged.' }
     }
     switch (choice) {
@@ -427,6 +503,8 @@ export const register: Register = (on, options) => {
         if (!enabled) return { text: 'The Bash feed is off. Turn it on with /bash-feed on.' }
         await openWindow($, false)
         return { text: 'Bash feed window opened.' }
+      case 'settings':
+        return { text: await settingsMenu($) }
       case 'pane':
         await $.ui.open({ id: PANE, title: 'Bash feed' })
         return { text: 'Bash feed pane opened.' }
@@ -435,7 +513,7 @@ export const register: Register = (on, options) => {
       case 'clear all':
         return { text: await clearLogs($, true) }
       default:
-        return { text: 'Use /bash-feed with on, off, window, pane, clear or clear all, or with nothing for the menu.' }
+        return { text: 'Use /bash-feed with on, off, window, settings, pane, clear or clear all, or with nothing for the menu.' }
     }
   })
 
