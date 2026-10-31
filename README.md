@@ -74,4 +74,6 @@ From a shell:
 claude plugin install bash-feed --marketplace cj-schmitz/bash-feed
 ```
 
-This repository is private: installing needs read access on GitHub and a git credential for github.com on your machine (an SSH key, or `gh auth login` then `gh auth setup-git`).
+## License
+
+MIT © 2026 cj-schmitz · [bizonmt.com](https://bizonmt.com). See [LICENSE](LICENSE).

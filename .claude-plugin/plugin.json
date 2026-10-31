@@ -123,5 +123,10 @@
       "min": 0,
       "max": 3650
     }
+  },
+  "license": "MIT",
+  "author": {
+    "name": "cj-schmitz",
+    "url": "https://bizonmt.com"
   }
 }

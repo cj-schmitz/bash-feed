@@ -60,6 +60,8 @@ out += [
     f'  {fg(LIGHT)}Tokens{OFF}      {fg(MUTED)}Explanations use Claude Haiku: about 600–1,600 tokens{OFF}',
     f'              {fg(MUTED)}per new command (repeats are free). Turn them off in{OFF}',
     f'              {fg(MUTED)}/bash-feed settings → Explanations → Off.{OFF}',
+    '',
+    f'  {fg(MUTED)}© 2026 cj-schmitz · MIT License · bizonmt.com{OFF}',
     f'  {fg(BRAND)}{"─" * 40} session {session} ──{OFF}',
     '',
 ]
