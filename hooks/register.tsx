@@ -455,6 +455,19 @@ const lessonLines = async ($: EngineInterface, run: BashRun, lesson: Lesson): Pr
   return [...risk, ...say, link, '']
 }
 
+// The command as the window shows it: formatted and wrapped, its first lines only when long,
+// the whole command saved and linked.
+const headerLines = async ($: EngineInterface, run: BashRun, cols: number): Promise<string[]> => {
+  const lines = wrap([header(run, cols)], cols)
+  if (lines.length <= settings.commandLines) return lines
+  const hidden = lines.length - settings.commandLines
+  const file = await saveOutput($, `${run.id}-command`, `${run.command}\n`)
+  return [
+    ...lines.slice(0, settings.commandLines),
+    `      ${ANSI.more}▸ ${hidden} more line${hidden === 1 ? '' : 's'} of this command · ⌘-click: file://${encodeURI(file)}${ANSI.off}`,
+  ]
+}
+
 const header = (run: BashRun, cols = width.cols) => {
   const prefix = `${run.n ? `§${run.n} ` : ''}$ `
   return `${mark(run.n)}${ANSI.dim}$${ANSI.off} ${formatCommand(run.command, ' '.repeat(prefix.length + 2), cols)}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
@@ -472,6 +485,8 @@ const settings = {
   showFileChanges: true,
   // Screen rows of output shown per command, wrapped lines counted; the rest is saved and linked.
   outputRows: 20,
+  // Lines of a long command shown before the rest is linked.
+  commandLines: 5,
   diffRows: 10,
   openOnStart: true,
   retentionDays: 90,
@@ -591,7 +606,7 @@ const saveOutput = async ($: EngineInterface, id: string, text: string): Promise
 const logBlock = async ($: EngineInterface, run: BashRun): Promise<string> => {
   const out: string[] = []
   const cols = await columns($)
-  if (lastLogged !== run.id) out.push(...wrap([header(run)], cols))
+  if (lastLogged !== run.id) out.push(...(await headerLines($, run, cols)))
   const body = [
     ...linesIn(run.stdout).map(text => `  ${text}`),
     ...linesIn(run.stderr).map(text => `${ANSI.err}  ${text}${ANSI.off}`),
@@ -685,12 +700,12 @@ const settingsMenu = async ($: EngineInterface): Promise<string> => {
     return done('teacherLevel', level, `Explanations: ${level}.`)
   }
   if (group === 'Output length') {
-    const which = await ask($, `Rows shown before the "more lines" link. Now: output ${settings.outputRows}, diffs ${settings.diffRows}. Change:`, ['Output rows per command', 'Diff rows per file change'])
+    const which = await ask($, `Lines shown before the "more lines" link. Now: commands ${settings.commandLines}, output ${settings.outputRows}, diffs ${settings.diffRows}. Change:`, ['Command lines shown', 'Output rows per command', 'Diff rows per file change'])
     if (!which) return 'Bash feed settings unchanged.'
-    const field = which.startsWith('Output') ? 'outputRows' : 'diffRows'
-    const answer = await ask($, `${which}? (Other: type a number)`, ['10', '20', '40', '80'])
+    const field = which.startsWith('Command') ? 'commandLines' : which.startsWith('Output') ? 'outputRows' : 'diffRows'
+    const answer = await ask($, `${which}? (Other: type a number)`, field === 'commandLines' ? ['3', '5', '10', '20'] : ['10', '20', '40', '80'])
     const rows = Math.floor(Number(answer))
-    if (!answer || !Number.isFinite(rows) || rows < (field === 'outputRows' ? 1 : 0)) return 'Bash feed settings unchanged.'
+    if (!answer || !Number.isFinite(rows) || rows < (field === 'diffRows' ? 0 : 1)) return 'Bash feed settings unchanged.'
     return done(field, rows, `${which}: ${rows}.`)
   }
   if (group === 'Window and logs') {
@@ -735,6 +750,7 @@ export const register: Register = (on, options) => {
     showRisk: flag('showRisk', true),
     showFileChanges: flag('showFileChanges', true),
     outputRows: count('outputRows', 20, 1),
+    commandLines: count('commandLines', 5, 1),
     diffRows: count('diffRows', 10, 0),
     openOnStart: flag('openOnStart', true),
     retentionDays: count('retentionDays', 90, 0),
@@ -836,7 +852,8 @@ export const register: Register = (on, options) => {
       lastLogged = id
       // Claude's own one-line reason for the command, written as a shell comment.
       const why = description && settings.showWhy ? [`${ANSI.dim}# ${description}${ANSI.off}`] : []
-      await appendLog($, [...wrap([...why, header(run), ...lines], await columns($)), ''].join('\n'))
+      const cols = await columns($)
+      await appendLog($, [...wrap(why, cols), ...(await headerLines($, run, cols)), ...wrap(lines, cols), ''].join('\n'))
     })
 
     const ran = await next(e)

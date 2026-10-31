@@ -55,6 +55,14 @@
       "description": "Show Claude's file edits (Edit, Write, notebook edits) with their diffs.",
       "default": true
     },
+    "commandLines": {
+      "type": "number",
+      "title": "Command lines shown",
+      "description": "Lines of a long command shown before the rest is linked (⌘-click to read it all).",
+      "default": 5,
+      "min": 1,
+      "max": 200
+    },
     "outputRows": {
       "type": "number",
       "title": "Output rows per command",

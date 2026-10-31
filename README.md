@@ -4,7 +4,7 @@ A Claude Code mod that shows every Bash command Claude runs, with its output, in
 
 - Every shell command Claude sends: Bash calls, Monitor watches, and subagents' commands (tagged `[monitor]` / `[subagent]`), plus Claude's file edits with their diffs (`✎ edited … +12 −3`)
 - Each command opens with Claude's reason as a `# comment`, then a red `⚠` line if it can delete, overwrite, push or send data out
-- Commands in syntax colours, long chains and loops laid out one step per line
+- Commands in syntax colours, long chains and loops laid out one step per line; a long command shows its first 5 lines, the rest behind a ⌘-click link
 - Explanations from Haiku: one plain-English sentence in green, with the part-by-part breakdown behind a ⌘-click link (or shown in full: Explanation layout = expanded)
 - Background commands and monitors stream their output (`┆`) as it arrives, until the task ends
 - Output is cut at 20 screen rows (wrapped lines count); the rest is saved and linked: ⌘-click `▸ N more lines`
@@ -30,6 +30,7 @@ A Claude Code mod that shows every Bash command Claude runs, with its output, in
 | Explanation language | English | any language |
 | Explanation layout | collapsed | `collapsed` (parts behind a link) or `expanded` |
 | Show why line / plain-English line / risk warnings / file changes | on | each can be turned off |
+| Command lines shown | 5 | lines of a long command before the ⌘-click link |
 | Output rows per command | 20 | rows shown before the link |
 | Diff rows per file change | 10 | rows shown before the link |
 | Open window at session start | on | off: open it with `/bash-feed window` |
