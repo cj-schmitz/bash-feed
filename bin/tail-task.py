@@ -1,15 +1,16 @@
 """Streams one background task's output file into a session's feed log until the task ends.
 
-Usage: tail-task.py <task-id> <log-file> <label> <claude-pid>
+Usage: tail-task.py <task-id> <log-file> <label> <claude-pid> <window-columns>
 The task's file ends with "[exited with code N]" or "[killed]"; the watch also stops
 when the Claude process exits, or after six hours.
 """
 import glob, os, re, shutil, sys, time
 from urllib.parse import quote
 
-task, log, label, pid = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+task, log, label, pid, cols = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), max(20, int(sys.argv[5]))
 DIM, BAR, BAD, MORE, OFF = '\x1b[2m', '\x1b[35m', '\x1b[1;31m', '\x1b[4;34m', '\x1b[0m'
-# Lines the window shows per task; the whole output is saved beside the logs and linked.
+# Screen rows the window shows per task, counting wrapped lines; the whole output is
+# saved beside the logs and linked.
 SHOW = 20
 END = re.compile(r'^\[(?:exited with code (-?\d+)|(killed))\]$')
 
@@ -34,7 +35,7 @@ while path is None and time.time() - began < 60:
 if path is None:
     sys.exit()
 
-offset, carry, pending_blank, shown = 0, b'', 0, 0
+offset, carry, pending_blank, shown, rows_used, cut = 0, b'', 0, 0, 0, False
 # The log's size after this watcher's last write: if it grew since, another command wrote
 # in between, so the next batch repeats the label.
 our_size = -1
@@ -68,20 +69,29 @@ while time.time() < deadline:
         if not line.strip():
             pending_blank += 1
             continue
-        if shown < SHOW:
-            out += [f'{BAR}  ┆{OFF}\n'] * pending_blank + [f'{BAR}  ┆{OFF} {line}\n']
-        elif shown == SHOW:
-            out.append(f'{DIM}  ┆ … more output; a link to all of it follows when the task ends{OFF}\n')
         shown += 1
+        if cut:
+            continue
+        rows = pending_blank + max(1, -(-(len(line) + 4) // cols))
+        if rows_used + rows <= SHOW:
+            out += [f'{BAR}  ┆{OFF}\n'] * pending_blank + [f'{BAR}  ┆{OFF} {line}\n']
+            rows_used += rows
+        else:
+            left = SHOW - rows_used - pending_blank
+            if left > 0:
+                out += [f'{BAR}  ┆{OFF}\n'] * pending_blank + [f'{BAR}  ┆{OFF} {line[:left * cols - 5]}…\n']
+            out.append(f'{DIM}  ┆ … more output; a link to all of it follows when the task ends{OFF}\n')
+            cut, hidden_from = True, shown  # the line that did not fit counts as hidden
         pending_blank = 0
     if end or not alive():
-        if shown > SHOW:
+        if cut:
             # The task file lives in a temp folder; a copy beside the logs outlasts it.
             saved_dir = os.path.join(os.path.dirname(log), 'out')
             os.makedirs(saved_dir, exist_ok=True)
             saved = os.path.join(saved_dir, f'{os.path.basename(log)[:8]}-{task}.txt')
             shutil.copyfile(path, saved)
-            out.append(f'{MORE}  ▸ {shown - SHOW} more lines · ⌘-click: file://{quote(saved)}{OFF}\n')
+            hidden = shown - hidden_from + 1
+            out.append(f'{MORE}  ▸ {hidden} more line{"" if hidden == 1 else "s"} · ⌘-click: file://{quote(saved)}{OFF}\n')
     if end:
         code = end.group(1)
         if code == '0':

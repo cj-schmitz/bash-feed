@@ -133,8 +133,51 @@ end tell`,
 
 const header = (run: BashRun) => `${ANSI.cmd}$ ${run.command}${ANSI.off}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
 
-// Output lines the window shows per command; a longer output is saved whole and linked.
+// Screen rows of output the window shows per command, counting wrapped lines; a longer
+// output is saved whole and linked.
 const SHOW = 20
+
+// The feed window's width in columns, asked of Terminal at most every 15 seconds.
+let width = { cols: 100, at: -Infinity }
+const columns = async ($: EngineInterface): Promise<number> => {
+  const now = Date.now()
+  if (now - width.at < 15_000) return width.cols
+  const asked = await $.process
+    .run(['osascript', '-e', `tell application "Terminal"
+  repeat with w in (get windows)
+    try
+      if custom title of selected tab of w is "${windowTitle()}" then return number of columns of selected tab of w
+    end try
+  end repeat
+end tell`])
+    .catch(() => undefined)
+  const cols = Number(asked?.stdout.trim())
+  width = { cols: cols > 20 ? cols : width.cols, at: now }
+  return width.cols
+}
+
+const visible = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '')
+const rowsOf = (line: string, cols: number) => Math.max(1, Math.ceil([...visible(line)].length / cols))
+
+// The lines that fit in `budget` screen rows; a line too long for what is left is cut.
+const fitRows = (lines: string[], cols: number, budget: number): { shown: string[]; hidden: number } => {
+  const shown: string[] = []
+  let left = budget
+  for (const [i, line] of lines.entries()) {
+    const rows = rowsOf(line, cols)
+    if (rows <= left) {
+      shown.push(line)
+      left -= rows
+      continue
+    }
+    if (left > 0) {
+      const chars = [...visible(line)].slice(0, left * cols - 1).join('')
+      shown.push(`${chars}…${ANSI.off}`)
+    }
+    return { shown, hidden: lines.length - i }
+  }
+  return { shown, hidden: 0 }
+}
 
 const linesIn = (text: string): string[] => {
   const trimmed = text.replace(/\s+$/, '')
@@ -157,11 +200,11 @@ const logBlock = async ($: EngineInterface, run: BashRun): Promise<string> => {
     ...linesIn(run.stdout).map(text => `  ${text}`),
     ...linesIn(run.stderr).map(text => `${ANSI.err}  ${text}${ANSI.off}`),
   ]
-  if (body.length > SHOW) {
+  const { shown, hidden } = fitRows(body, await columns($), SHOW)
+  out.push(...shown)
+  if (hidden > 0) {
     const file = await saveOutput($, run.id, [run.stdout, run.stderr].filter(text => text.trim()).join('\n'))
-    out.push(...body.slice(0, SHOW), `${ANSI.more}  ▸ ${body.length - SHOW} more lines · ⌘-click: file://${encodeURI(file)}${ANSI.off}`)
-  } else {
-    out.push(...body)
+    out.push(`${ANSI.more}  ▸ ${hidden} more line${hidden === 1 ? '' : 's'} · ⌘-click: file://${encodeURI(file)}${ANSI.off}`)
   }
   if (run.note) out.push(`${ANSI.bad}  ✗ ${run.note}${ANSI.off}`)
   else if (run.exitCode === 0) out.push(`${ANSI.ok}  ✓ exit 0${ANSI.off}`)
@@ -169,7 +212,12 @@ const logBlock = async ($: EngineInterface, run: BashRun): Promise<string> => {
   return out.join('\n') + '\n\n'
 }
 
-export const register: Register = on => {
+// Shell snippet: the feed folder's size, as du prints it (e.g. 5.1M).
+const SIZE = `du -sh "$HOME/.claude/bash-feed" 2>/dev/null | cut -f1`
+
+export const register: Register = (on, options) => {
+  const retentionDays = Math.max(0, Math.floor(Number(options.retentionDays ?? 90)))
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'bash-feed',
@@ -179,12 +227,19 @@ export const register: Register = on => {
       name: 'bash-feed-window',
       description: 'Open a separate Terminal window that streams Bash commands and their output',
     })
+    await $.command.register({
+      name: 'bash-feed-clear',
+      description: "Delete Bash feed logs and saved outputs from other sessions ('all' also empties this session's)",
+      argumentHint: '[all]',
+    })
     void $.ui.open({ id: PANE, title: 'Bash feed' })
     sessionId = await $.session.id()
-    // Session logs and saved outputs last modified more than 90 days ago are deleted.
-    enqueue(() =>
-      $.process.run(['/bin/sh', '-c', `[ -d "$HOME/.claude/bash-feed" ] && find "$HOME/.claude/bash-feed" -type f \( -name '*.log' -o -name '*.txt' \) -mtime +90 -delete`]),
-    )
+    // Session logs and saved outputs older than the retention setting are deleted (0 keeps all).
+    if (retentionDays > 0) {
+      enqueue(() =>
+        $.process.run(['/bin/sh', '-c', `[ -d "$HOME/.claude/bash-feed" ] && find "$HOME/.claude/bash-feed" -type f \( -name '*.log' -o -name '*.txt' \) -mtime +${retentionDays} -delete`]),
+      )
+    }
     if (e.isInteractive) {
       enqueue(async () => {
         // The header goes in once per session file, not again on each reload.
@@ -202,6 +257,28 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: 'Bash feed' })
 
     return { text: 'Bash feed opened.' }
+  })
+
+  on('command.run', { command: 'bash-feed-clear' }, async ($, e) => {
+    if (!sessionId) sessionId = await $.session.id()
+    const all = e.args.trim().toLowerCase() === 'all'
+    const keep = sessionId.slice(0, 8)
+    // Other sessions' logs and outputs go; this session's log is emptied, not deleted,
+    // so its open window keeps following it.
+    const script = `d="$HOME/.claude/bash-feed"; [ -d "$d" ] || exit 0
+before=$(${SIZE})
+find "$d" -maxdepth 1 -type f -name '*.log' ! -name '${sessionId}.log' -delete
+find "$d/out" -type f -name '*.txt' ! -name '${keep}-*' -delete 2>/dev/null
+${all ? `: > "$d/${sessionId}.log"; rm -f "$d/out/${keep}-"*.txt` : ''}
+echo "$before $(${SIZE})"`
+    const ran = await queue.then(() => $.process.run(['/bin/sh', '-c', script]))
+    const [before = '?', after = '?'] = ran.stdout.trim().split(/\s+/)
+    if (all) lastLogged = ''
+    return {
+      text: all
+        ? `Deleted all Bash feed logs (${before} → ${after}).`
+        : `Deleted other sessions' Bash feed logs (${before} → ${after}). This session's log stays; use /bash-feed-clear all to empty it too.`,
+    }
   })
 
   on('command.run', { command: 'bash-feed-window' }, async $ => {
@@ -263,7 +340,7 @@ export const register: Register = on => {
       if (taskId) {
         const short = command.replace(/\s+/g, ' ')
         const label = `${short.length > 50 ? `${short.slice(0, 50)}…` : short} (task ${taskId})`
-        await $.process.run(['/bin/sh', `${$.plugin.root}/bin/tail-task.sh`, sessionId, taskId, label])
+        await $.process.run(['/bin/sh', `${$.plugin.root}/bin/tail-task.sh`, sessionId, taskId, label, String(await columns($))])
       }
     })
 

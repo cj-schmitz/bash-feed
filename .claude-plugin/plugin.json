@@ -1,1 +1,16 @@
-{ "name": "bash-feed", "version": "0.1.0", "description": "Streams each Bash command Claude runs, with color-coded output and short explanations, to a per-session Terminal window", "types": "./types/index.d.ts" }
+{
+  "name": "bash-feed",
+  "version": "0.1.0",
+  "description": "Streams each Bash command Claude runs, with color-coded output and short explanations, to a per-session Terminal window",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "retentionDays": {
+      "type": "number",
+      "title": "Keep logs for (days)",
+      "description": "Session logs and saved long outputs older than this are deleted when a session starts. 0 keeps them forever.",
+      "default": 90,
+      "min": 0,
+      "max": 3650
+    }
+  }
+}

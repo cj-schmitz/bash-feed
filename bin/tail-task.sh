@@ -1,6 +1,6 @@
 #!/bin/sh
 # Starts a detached watcher that streams a background task's output into the feed log.
-# Usage: tail-task.sh <session-id> <task-id> <label>
+# Usage: tail-task.sh <session-id> <task-id> <label> <window-columns>
 here=$(cd "$(dirname "$0")" && pwd)
 log="$HOME/.claude/bash-feed/$1.log"
 
@@ -11,4 +11,4 @@ while [ "${p:-1}" -gt 1 ]; do
   p=$(ps -o ppid= -p "$p" | tr -d ' ')
 done
 
-nohup /usr/bin/python3 -I "$here/tail-task.py" "$2" "$log" "$3" "$pid" >/dev/null 2>&1 &
+nohup /usr/bin/python3 -I "$here/tail-task.py" "$2" "$log" "$3" "$pid" "${4:-100}" >/dev/null 2>&1 &
