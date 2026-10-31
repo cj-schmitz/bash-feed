@@ -21,6 +21,16 @@
       "description": "The language the explanations and plain-English line are written in.",
       "default": "English"
     },
+    "explainer": {
+      "type": "string",
+      "title": "Explanation layout",
+      "description": "collapsed: show the warning and the plain-English line, with the part-by-part explanation behind a ⌘-click link. expanded: show every part in the window.",
+      "options": [
+        "collapsed",
+        "expanded"
+      ],
+      "default": "collapsed"
+    },
     "showWhy": {
       "type": "boolean",
       "title": "Show why line",

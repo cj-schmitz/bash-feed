@@ -63,16 +63,18 @@ command does, in order, for someone who has never used a terminal. Example for
 No intro, no closing, no markdown.`
 
 // Lessons by command, so a repeated command is not explained twice.
-const lessons = new Map<string, Promise<string[]>>()
+type Lesson = { risk?: string; terms: (readonly [string, string])[]; say?: string }
 
-const lessonFor = ($: EngineInterface, command: string): Promise<string[]> => {
-  if (settings.teacherLevel === 'off') return Promise.resolve([])
+const lessons = new Map<string, Promise<Lesson>>()
+
+const lessonFor = ($: EngineInterface, command: string): Promise<Lesson> => {
+  if (settings.teacherLevel === 'off') return Promise.resolve({ terms: [] })
   const known = lessons.get(command)
   if (known) return known
   const asked = $.model
     .complete({ model: 'haiku', system: teacher(), prompt: command, maxTokens: 400, timeoutMs: 20_000 })
     .then(reply => {
-      if (!reply.isAnswered) return []
+      if (!reply.isAnswered) return { terms: [] }
       const parts = reply.text
         .split('\n')
         .map(line => line.split('::'))
@@ -88,17 +90,9 @@ const lessonFor = ($: EngineInterface, command: string): Promise<string[]> => {
           }
           return [part, meaning] as const
         })
-        .map(([part, meaning]) => `  ${ANSI.term}${part.padEnd(14)}${ANSI.off} ${ANSI.dim}${meaning}${ANSI.off}`)
-      const say = parts.find(([part]) => part === 'SAY')
-      const risk = parts.find(([part]) => part === 'RISK')
-      // The warning leads; a blank line keeps the summary apart from the output that follows.
-      return [
-        ...(risk && settings.showRisk ? [`  ${ANSI.bad}⚠ ${risk[1]}${ANSI.off}`] : []),
-        ...terms,
-        ...(say && settings.showSummary ? [`  ${ANSI.say}→ ${say[1]}${ANSI.off}`, ''] : []),
-      ]
+      return { terms, risk: parts.find(([part]) => part === 'RISK')?.[1], say: parts.find(([part]) => part === 'SAY')?.[1] }
     })
-    .catch(() => [])
+    .catch(() => ({ terms: [] }))
   lessons.set(command, asked)
   return asked
 }
@@ -437,6 +431,30 @@ const formatCommand = (command: string, indent: string, cols: number): string =>
   return out
 }
 
+// A lesson as the window shows it: the warning first, then the parts (or, collapsed, a link to
+// them), then the plain-English line; a blank line keeps it apart from the output below.
+const lessonLines = async ($: EngineInterface, run: BashRun, lesson: Lesson): Promise<string[]> => {
+  const risk = lesson.risk && settings.showRisk ? [`  ${ANSI.bad}⚠ ${lesson.risk}${ANSI.off}`] : []
+  const say = lesson.say && settings.showSummary ? [`  ${ANSI.say}→ ${lesson.say}${ANSI.off}`] : []
+  const { terms } = lesson
+  if (terms.length === 0) return [...risk, ...say, ...(risk.length || say.length ? [''] : [])]
+  if (settings.explainer === 'expanded') {
+    const parts = terms.map(([part, meaning]) => `  ${ANSI.term}${part.padEnd(14)}${ANSI.off} ${ANSI.dim}${meaning}${ANSI.off}`)
+    return [...risk, ...parts, ...say, '']
+  }
+  const width = Math.min(24, Math.max(...terms.map(([part]) => [...part].length)) + 2)
+  const text = [
+    `$ ${run.command}`,
+    '',
+    ...(lesson.risk ? [`⚠ ${lesson.risk}`, ''] : []),
+    ...terms.map(([part, meaning]) => `${part.padEnd(width)} ${meaning}`),
+    ...(lesson.say ? ['', `→ ${lesson.say}`] : []),
+  ].join('\n')
+  const file = await saveOutput($, `${run.id}-explained`, `${text}\n`)
+  const link = `  ${ANSI.more}▸ ${terms.length} part${terms.length === 1 ? '' : 's'} explained · ⌘-click: file://${encodeURI(file)}${ANSI.off}`
+  return [...risk, ...say, link, '']
+}
+
 const header = (run: BashRun, cols = width.cols) => {
   const prefix = `${run.n ? `§${run.n} ` : ''}$ `
   return `${mark(run.n)}${ANSI.dim}$${ANSI.off} ${formatCommand(run.command, ' '.repeat(prefix.length + 2), cols)}${run.from ? ` ${ANSI.dim}[${run.from}]${ANSI.off}` : ''}`
@@ -446,6 +464,8 @@ const header = (run: BashRun, cols = width.cols) => {
 const settings = {
   teacherLevel: 'beginner' as 'beginner' | 'intermediate' | 'off',
   language: 'English',
+  // collapsed: the part-by-part explanation sits behind a ⌘-click link.
+  explainer: 'collapsed' as 'collapsed' | 'expanded',
   showWhy: true,
   showSummary: true,
   showRisk: true,
@@ -648,7 +668,14 @@ const settingsMenu = async ($: EngineInterface): Promise<string> => {
     return `Bash feed now shows: ${chosen.join(', ') || 'none of these'}.`
   }
   if (group === 'Explanations') {
-    const picked = await ask($, `Explanations are ${settings.teacherLevel}, in ${settings.language}. Change to:`, ['Beginner', 'Intermediate', 'Off (no Haiku calls)', 'Change language'])
+    const toggle = settings.explainer === 'collapsed' ? 'Show every part in the window' : 'Collapse behind a link'
+    const what = await ask($, `Explanations: ${settings.teacherLevel}, in ${settings.language}, ${settings.explainer}. Change:`, ['Level', 'Language', toggle])
+    if (!what) return 'Bash feed settings unchanged.'
+    if (what === toggle) {
+      const layout = settings.explainer === 'collapsed' ? 'expanded' : 'collapsed'
+      return done('explainer', layout, layout === 'collapsed' ? 'Explanations are collapsed behind a link.' : 'Explanations show every part.')
+    }
+    const picked = what === 'Language' ? 'Change language' : await ask($, `Explanations are ${settings.teacherLevel}. Change to:`, ['Beginner', 'Intermediate', 'Off (no Haiku calls)'])
     if (!picked) return 'Bash feed settings unchanged.'
     if (picked === 'Change language') {
       const language = (await ask($, `Explanations are in ${settings.language}. Which language? (Other: type any)`, ['English', 'Spanish', 'French', 'German'])).trim()
@@ -702,6 +729,7 @@ export const register: Register = (on, options) => {
   Object.assign(settings, {
     teacherLevel: level === 'intermediate' || level === 'off' ? level : 'beginner',
     language: String(options.language ?? '').trim() || 'English',
+    explainer: options.explainer === 'expanded' ? 'expanded' : 'collapsed',
     showWhy: flag('showWhy', true),
     showSummary: flag('showSummary', true),
     showRisk: flag('showRisk', true),
@@ -804,7 +832,7 @@ export const register: Register = (on, options) => {
     await update($, runs, list => [...list, run].slice(-MAX_RUNS))
     const lesson = lessonFor($, run.command)
     enqueue(async () => {
-      const lines = await lesson
+      const lines = await lessonLines($, run, await lesson)
       lastLogged = id
       // Claude's own one-line reason for the command, written as a shell comment.
       const why = description && settings.showWhy ? [`${ANSI.dim}# ${description}${ANSI.off}`] : []
