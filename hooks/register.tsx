@@ -735,10 +735,18 @@ const settingsMenu = async ($: EngineInterface): Promise<string> => {
 const MENU = {
   on: 'Turn on',
   off: 'Turn off',
-  window: 'Reopen the window',
+  window: 'Window',
   settings: 'Settings',
-  clear: 'Clear logs',
+  delete: 'Delete logs',
 } as const
+
+// Wipes the window's screen and scrollback: the escape codes go through the log, which the
+// window prints as it grows.
+const clearWindow = ($: EngineInterface) =>
+  enqueue(async () => {
+    lastLogged = ''
+    await appendLog($, `\x1b[H\x1b[2J\x1b[3J${ANSI.dim}── cleared · ${new Date().toLocaleTimeString()} ──${ANSI.off}\n\n`)
+  })
 
 export const register: Register = (on, options) => {
   const flag = (key: keyof typeof settings, fallback: boolean) => (typeof options[key] === 'boolean' ? (options[key] as boolean) : fallback)
@@ -767,7 +775,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'bash-feed',
       description: 'Turn the Bash feed on or off, change its settings, reopen its window, or clear its logs',
-      argumentHint: '[on|off|window|settings|pane|clear|clear all]',
+      argumentHint: '[on|off|window|clear|close|settings|delete|delete all]',
     })
     sessionId = await $.session.id()
     enabled = (await $.store.get('enabled')) !== false
@@ -798,15 +806,19 @@ export const register: Register = (on, options) => {
     let choice = e.args.trim().toLowerCase()
     if (!choice) {
       // No argument: a menu, like /permissions.
-      const options = enabled ? [MENU.off, MENU.window, MENU.settings, MENU.clear] : [MENU.on, MENU.settings, MENU.clear]
+      const options = enabled ? [MENU.off, MENU.window, MENU.settings, MENU.delete] : [MENU.on, MENU.settings, MENU.delete]
       const size = (await $.process.run(['/bin/sh', '-c', SIZE])).stdout.trim() || '0B'
       const picked = await $.ui
         .ask(`The Bash feed is ${enabled ? 'on' : 'off'} (logs use ${size}). What do you want to do?`, { header: 'Bash feed', options })
         .catch(() => '')
       choice = (Object.keys(MENU) as (keyof typeof MENU)[]).find(key => MENU[key] === picked) ?? ''
-      if (choice === 'clear') {
-        const which = await ask($, 'Clear which logs?', ["Other sessions' logs", 'All logs, this session too'])
-        choice = which.startsWith('All') ? 'clear all' : which ? 'clear' : ''
+      if (choice === 'window') {
+        const which = await ask($, 'The feed window:', ['Reopen it', 'Clear it', 'Close it'])
+        choice = which === 'Clear it' ? 'clear' : which === 'Close it' ? 'close' : which ? 'window' : ''
+      }
+      if (choice === 'delete') {
+        const which = await ask($, 'Delete which logs?', ["Other sessions' logs", 'All logs, this session too'])
+        choice = which.startsWith('All') ? 'delete all' : which ? 'delete' : ''
       }
       if (!choice) return { text: 'Bash feed unchanged.' }
     }
@@ -831,11 +843,18 @@ export const register: Register = (on, options) => {
         await $.ui.open({ id: PANE, title: 'Bash feed' })
         return { text: 'Bash feed pane opened.' }
       case 'clear':
+        clearWindow($)
+        await queue
+        return { text: 'Bash feed window cleared.' }
+      case 'close':
+        await queue.then(() => closeWindow($))
+        return { text: 'Bash feed window closed. Reopen it with /bash-feed window.' }
+      case 'delete':
         return { text: await clearLogs($, false) }
-      case 'clear all':
+      case 'delete all':
         return { text: await clearLogs($, true) }
       default:
-        return { text: 'Use /bash-feed with on, off, window, settings, pane, clear or clear all, or with nothing for the menu.' }
+        return { text: 'Use /bash-feed with on, off, window, clear, close, settings, pane, delete or delete all, or with nothing for the menu.' }
     }
   })
 
