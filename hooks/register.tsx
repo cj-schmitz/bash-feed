@@ -132,7 +132,8 @@ const appendLog = ($: EngineInterface, text: string) =>
 // `keepFocus`, the window that was in front goes back in front.
 const openWindow = ($: EngineInterface, keepFocus: boolean) => {
   const title = windowTitle()
-  const tail = `clear; tail -n 300 -F ${logFile().replace('$HOME', '~')}; exit`
+  // The BizonAg banner first, then the log as it grows.
+  const tail = `clear; sh '${$.plugin.root}/bin/banner.sh' ${sessionId.slice(0, 8)}; tail -n 300 -F ${logFile().replace('$HOME', '~')}; exit`
   return $.process.run([
     'osascript',
     '-e', `tell application "Terminal"
