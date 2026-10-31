@@ -198,10 +198,15 @@ def open_window(log, short, title, mode, keep_focus):
         viewer.append('--plain')
     if sys.platform == 'darwin':
         open_mac(viewer, title, keep_focus)
-    elif WINDOWS:
-        open_windows(viewer, title)
-    else:
-        open_linux(viewer, title)
+        return
+    # Linux and Windows: Claude's window is noted while it is still in front, then a
+    # detached helper moves the new window next to it once it appears.
+    import json
+    from place import active
+    before = active()
+    opened = open_windows(viewer, title) if WINDOWS else open_linux(viewer, title)
+    if opened and before:
+        detach([*PY, os.path.join(HERE, 'place.py'), title, '1' if keep_focus else '0', json.dumps(before)])
 
 
 def close_window(log, title):

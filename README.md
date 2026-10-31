@@ -50,6 +50,8 @@ Needs Python 3 (`python3`, or `py` on Windows).
 - **Linux:** opens in `$TERMINAL` if set, else the first found of x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal, kitty, alacritty, wezterm, foot, tilix, xterm. Not yet tested.
 - **Windows:** opens in Windows Terminal (`wt`), else a new console window. Not yet tested.
 
+The window opens right next to Claude's window, on the same display: on its right if there is room, else its left, narrower to fit. On Linux this needs X11 and `wmctrl` or `xdotool` (Wayland does not let programs place windows, so the desktop decides there).
+
 The window's program closes itself when the Claude session that opened it exits.
 
 ## Tokens
