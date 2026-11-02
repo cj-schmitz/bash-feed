@@ -457,8 +457,14 @@ def close_mac_window():
     script = ('on run argv\ntell application "Terminal"\nrepeat with w in (get windows)\ntry\n'
               'if custom title of selected tab of w is (item 1 of argv) then close w\nend try\n'
               'end repeat\nend tell\nend run')
-    subprocess.Popen(['/bin/sh', '-c', 'sleep 0.4; osascript -e "$0" "$1"', script, TITLE],
+    subprocess.Popen(['/bin/sh', '-c', 'sleep 0.1; osascript -e "$0" "$1"', script, TITLE],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def ended():
+    """Whether the session is over: its Claude process gone, or its stop file there.
+    Checked every tenth of a second, so the window closes as soon as the session ends."""
+    return (CLAUDE and not alive(CLAUDE)) or os.path.exists(BASE + '.stop')
 
 
 def follow_plain(out):
@@ -467,10 +473,10 @@ def follow_plain(out):
     out.write('\x1b[2J\x1b[H' + '\n'.join(feed.banner()))
     offset, checked = 0, 0
     while True:
+        if ended():
+            return
         if time.time() - checked > 1:
             checked = time.time()
-            if (CLAUDE and not alive(CLAUDE)) or os.path.exists(BASE + '.stop'):
-                return
             write_file(BASE + '.cols', str(os.get_terminal_size(out.fileno()).columns))
         try:
             size = os.path.getsize(LOG)
@@ -485,7 +491,7 @@ def follow_plain(out):
             offset += len(chunk)
             out.write(chunk.decode('utf-8', errors='replace'))
             out.flush()
-        time.sleep(0.25)
+        time.sleep(0.1)
 
 
 def main():
@@ -515,7 +521,7 @@ def main():
     feed = Feed()
     feed.reset()
     keys = Keys()
-    state = {'size': None, 'checked': 0.0}
+    state = {'size': None}
 
     def restore(*_):
         out.write('\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l')
@@ -537,14 +543,12 @@ def main():
                 feed.cache, feed.dirty = {}, True
                 out.write('\x1b[2J')
                 write_file(BASE + '.cols', str(feed.cols))
-            if time.time() - state['checked'] > 1:
-                state['checked'] = time.time()
-                if (CLAUDE and not alive(CLAUDE)) or os.path.exists(BASE + '.stop'):
-                    restore()
+            if ended():
+                restore()
             feed.poll()
             if feed.dirty:
                 feed.draw(out)
-            got = keys.read(0.25)
+            got = keys.read(0.1)
             if not got:
                 continue
             pending += got

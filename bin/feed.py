@@ -220,10 +220,10 @@ def close_window(log, title):
             open(stop, 'w').close()
         except OSError:
             pass
-        for _ in range(20):
+        for _ in range(40):
             if not alive(pid):
                 break
-            time.sleep(0.1)
+            time.sleep(0.05)
     try:
         os.remove(stop)
     except OSError:
@@ -239,8 +239,9 @@ def close_window(log, title):
     except OSError:
         pass
     if sys.platform == 'darwin':
-        # Terminal may keep a finished window open, depending on its profile.
-        time.sleep(0.3)
+        # Terminal may keep a finished window open, depending on its profile; the shell
+        # behind the viewer exits a moment after it.
+        time.sleep(0.1)
         apple(CLOSE_MAC, title)
 
 
