@@ -56,6 +56,8 @@ let enabled = true
 // Each command and file change gets the next step number, written "§12": ⌘F § (⌥6) in the
 // window, then ⌘G / ⇧⌘G, jumps from step to step.
 let step = 0
+// Whether this process has a person at it (session.start's isInteractive), for reopening after /clear.
+let interactive = false
 const mark = (n: number | undefined) => (n ? `${ANSI.dim}§${n}${ANSI.off} ` : '')
 // Log writes run one after another, so a slow lesson never lets a later block jump ahead.
 let queue: Promise<unknown> = Promise.resolve()
@@ -889,6 +891,7 @@ export const register: Register = (on, options) => {
       argumentHint: '[on|off|window|clear|close|settings|delete|delete all]',
     })
     sessionId = await $.session.id()
+    interactive = e.isInteractive
     enabled = (await $.store.get('enabled')) !== false
     if (!(await setup($))) return next(e)
     // Step numbers carry on from the highest already in this session's log.
@@ -904,6 +907,26 @@ export const register: Register = (on, options) => {
     }
 
     return next(e)
+  })
+
+  // The window watches the Claude process, which outlives a session on /clear and on a
+  // resume, so the session's end closes it here. After a /clear the process carries on under
+  // a new id with no session.start, so the feed moves to it and opens a fresh window.
+  on('session.end', async ($, e, next) => {
+    if (sessionId && host.python.length) await closeWindow($).catch(() => undefined)
+    const ended = await next(e)
+    if (e.reason === 'clear') {
+      sessionId = await $.session.id()
+      step = 0
+      lastLogged = ''
+      if (interactive && enabled && settings.openOnStart) {
+        enqueue(async () => {
+          await feed($, ['init', logFile()], `${ANSI.dim}── session ${sessionId.slice(0, 8)} · ${new Date().toLocaleString()} ──${ANSI.off}\n\n`)
+          await openWindow($, true)
+        })
+      }
+    }
+    return ended
   })
 
   on('command.run', { command: 'bash-feed' }, async ($, e) => {
