@@ -232,7 +232,23 @@ const startFeed = async ($: EngineInterface, resumed: boolean) => {
 }
 
 // Stops this session's window program and closes its window.
-const closeWindow = ($: EngineInterface) => feed($, ['close', logFile(), windowTitle()])
+// `id` names the session whose window closes: at a session's end, the one ending, which the
+// feed may already have left for the next.
+const closeWindow = ($: EngineInterface, id = sessionId) =>
+  feed($, ['close', `${host.dir}/${id || 'unknown'}.log`, `Bash feed ${id.slice(0, 8)}`])
+
+// After a /clear or a /resume the process goes on under another id with no session.start:
+// the feed moves to it, and a resumed session's log comes back. Answers whether it moved.
+const follow = async ($: EngineInterface): Promise<boolean> => {
+  const id = await $.session.id().catch(() => sessionId)
+  if (!sessionId || id === sessionId || !host.python.length) return false
+  sessionId = id
+  lastLogged = ''
+  const resumed = endReason === 'resume' || (await $.session.turns().catch(() => 0)) > 1
+  endReason = ''
+  await startFeed($, resumed).catch(() => undefined)
+  return true
+}
 
 // Shell syntax colours for the command line: programs, flags, quoted text, variables and
 // substitutions, operators and keywords, comments, heredoc bodies.
@@ -917,22 +933,24 @@ export const register: Register = (on, options) => {
   // resume, so the session's end closes it here (bin/feed.py lets the closing outlive the
   // short time Claude gives a session's end).
   on('session.end', async ($, e, next) => {
-    if (sessionId && host.python.length) await closeWindow($).catch(() => undefined)
+    if (host.python.length) await closeWindow($, e.sessionId).catch(() => undefined)
     endReason = e.reason
+    // The next session's window opens as soon as the process has moved to it, without
+    // waiting for a prompt there (checked twice a second for ten seconds).
+    if (e.reason === 'clear' || e.reason === 'resume') {
+      let tries = 0
+      const tick = $.clock.every(500, () => {
+        void follow($).then(moved => {
+          if (moved || ++tries >= 20) tick.cancel()
+        }, () => tick.cancel())
+      })
+    }
     return next(e)
   })
 
-  // After a /clear or a /resume the process goes on under another id with no session.start,
-  // so the first prompt there moves the feed to it: a resumed session's log comes back.
+  // A prompt in the next session moves the feed there too, if the timer has not.
   on('prompt.submit', async ($, e, next) => {
-    const id = await $.session.id().catch(() => sessionId)
-    if (sessionId && id !== sessionId && host.python.length) {
-      sessionId = id
-      lastLogged = ''
-      const resumed = endReason === 'resume'
-      endReason = ''
-      await startFeed($, resumed).catch(() => undefined)
-    }
+    await follow($).catch(() => undefined)
     return next(e)
   })
 
