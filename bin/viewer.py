@@ -4,7 +4,7 @@ move around it.
 Usage: viewer.py <log-file> <short-session-id> [--pid <claude-pid>] [--title <title>] [--plain]
 
 With --plain it only prints the log as it grows, like `tail -F`. Either way it closes when
-the Claude process <claude-pid> exits, writes its own pid beside the log (<log>.window, for
+the Claude process <claude-pid> exits or <log>.stop appears (the session ended), writes its own pid beside the log (<log>.window, for
 /bash-feed close) and its width (<log>.cols, which the mod wraps lines to).
 
   ↑ / ↓          previous / next step (§n); ↓ past the last goes back to live
@@ -469,7 +469,7 @@ def follow_plain(out):
     while True:
         if time.time() - checked > 1:
             checked = time.time()
-            if CLAUDE and not alive(CLAUDE):
+            if (CLAUDE and not alive(CLAUDE)) or os.path.exists(BASE + '.stop'):
                 return
             write_file(BASE + '.cols', str(os.get_terminal_size(out.fileno()).columns))
         try:
@@ -494,6 +494,7 @@ def main():
         enable_vt()
         out.reconfigure(encoding='utf-8')
     out.write(f'\x1b]0;{TITLE}\x07')
+    remove_file(BASE + '.stop')
     write_file(BASE + '.window', str(os.getpid()))
 
     def finish(*_):
@@ -538,7 +539,7 @@ def main():
                 write_file(BASE + '.cols', str(feed.cols))
             if time.time() - state['checked'] > 1:
                 state['checked'] = time.time()
-                if CLAUDE and not alive(CLAUDE):
+                if (CLAUDE and not alive(CLAUDE)) or os.path.exists(BASE + '.stop'):
                     restore()
             feed.poll()
             if feed.dirty:

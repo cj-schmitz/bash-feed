@@ -219,6 +219,18 @@ const logEdit = async ($: EngineInterface, e: Extract<ToolCallInput, { tool: 'Ed
   return ran
 }
 
+// Points the feed at this session: step numbers carry on from its log, the log gets its
+// header (or, resumed, a marker, or a note that its logs were deleted), and the window opens.
+let endReason = ''
+const startFeed = async ($: EngineInterface, resumed: boolean) => {
+  step = Number((await feed($, ['last-step', logFile()])).stdout.trim()) || 0
+  if (!(interactive && enabled && settings.openOnStart)) return
+  enqueue(async () => {
+    await feed($, ['init', logFile(), resumed ? '1' : '0'], `${ANSI.dim}── session ${sessionId.slice(0, 8)} · ${new Date().toLocaleString()} ──${ANSI.off}\n\n`)
+    await openWindow($, true)
+  })
+}
+
 // Stops this session's window program and closes its window.
 const closeWindow = ($: EngineInterface) => feed($, ['close', logFile(), windowTitle()])
 
@@ -894,39 +906,34 @@ export const register: Register = (on, options) => {
     interactive = e.isInteractive
     enabled = (await $.store.get('enabled')) !== false
     if (!(await setup($))) return next(e)
-    // Step numbers carry on from the highest already in this session's log.
-    step = Number((await feed($, ['last-step', logFile()])).stdout.trim()) || 0
     // Session logs and saved outputs older than the retention setting are deleted (0 keeps all).
     if (retentionDays > 0) enqueue(() => feed($, ['clean', host.dir, String(retentionDays)]))
-    if (e.isInteractive && enabled && settings.openOnStart) {
-      enqueue(async () => {
-        // The header goes in once per session file, not again on each reload.
-        await feed($, ['init', logFile()], `${ANSI.dim}── session ${sessionId.slice(0, 8)} · ${new Date().toLocaleString()} ──${ANSI.off}\n\n`)
-        await openWindow($, true)
-      })
-    }
-
+    // A session started with --resume already has turns: its log comes back in the window.
+    await startFeed($, (await $.session.turns()) > 0)
     return next(e)
   })
 
   // The window watches the Claude process, which outlives a session on /clear and on a
-  // resume, so the session's end closes it here. After a /clear the process carries on under
-  // a new id with no session.start, so the feed moves to it and opens a fresh window.
+  // resume, so the session's end closes it here (bin/feed.py lets the closing outlive the
+  // short time Claude gives a session's end).
   on('session.end', async ($, e, next) => {
     if (sessionId && host.python.length) await closeWindow($).catch(() => undefined)
-    const ended = await next(e)
-    if (e.reason === 'clear') {
-      sessionId = await $.session.id()
-      step = 0
+    endReason = e.reason
+    return next(e)
+  })
+
+  // After a /clear or a /resume the process goes on under another id with no session.start,
+  // so the first prompt there moves the feed to it: a resumed session's log comes back.
+  on('prompt.submit', async ($, e, next) => {
+    const id = await $.session.id().catch(() => sessionId)
+    if (sessionId && id !== sessionId && host.python.length) {
+      sessionId = id
       lastLogged = ''
-      if (interactive && enabled && settings.openOnStart) {
-        enqueue(async () => {
-          await feed($, ['init', logFile()], `${ANSI.dim}── session ${sessionId.slice(0, 8)} · ${new Date().toLocaleString()} ──${ANSI.off}\n\n`)
-          await openWindow($, true)
-        })
-      }
+      const resumed = endReason === 'resume'
+      endReason = ''
+      await startFeed($, resumed).catch(() => undefined)
     }
-    return ended
+    return next(e)
   })
 
   on('command.run', { command: 'bash-feed' }, async ($, e) => {

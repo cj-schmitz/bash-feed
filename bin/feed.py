@@ -210,7 +210,24 @@ def open_window(log, short, title, mode, keep_focus):
 
 
 def close_window(log, title):
+    # The viewer stops by itself, with exit code 0, when its stop file appears: a terminal
+    # that keeps a window open after a failed program (Windows Terminal's default) still
+    # closes it. One still running after two seconds is ended.
     pid = window_pid(log)
+    stop = log[:-4] + '.stop'
+    if alive(pid):
+        try:
+            open(stop, 'w').close()
+        except OSError:
+            pass
+        for _ in range(20):
+            if not alive(pid):
+                break
+            time.sleep(0.1)
+    try:
+        os.remove(stop)
+    except OSError:
+        pass
     if alive(pid):
         if WINDOWS:
             subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], capture_output=True)
@@ -238,10 +255,20 @@ def main(action, *args):
         with open(args[0], 'a', encoding='utf-8', newline='\n') as f:
             f.write(sys.stdin.read())
     elif action == 'init':
-        if not os.path.exists(args[0]):
-            os.makedirs(os.path.dirname(args[0]), exist_ok=True)
-            with open(args[0], 'w', encoding='utf-8', newline='\n') as f:
-                f.write(sys.stdin.read())
+        # init <log> [resumed]: a new session's log starts with the header on stdin. A
+        # resumed one keeps its log, marked where the resume began; if that log is gone
+        # (deleted, or past the retention setting) the header says so.
+        log, resumed = args[0], len(args) > 1 and args[1] == '1'
+        header = sys.stdin.read()
+        if os.path.exists(log):
+            # A reload runs session.start again with the window still open: no marker then.
+            if resumed and not alive(window_pid(log)):
+                with open(log, 'a', encoding='utf-8', newline='\n') as f:
+                    f.write(header.replace(' session ', ' resumed ', 1))
+        else:
+            os.makedirs(os.path.dirname(log), exist_ok=True)
+            with open(log, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(header + ('\x1b[2mLogs have been deleted.\x1b[0m\n\n' if resumed else ''))
     elif action == 'last-step':
         try:
             text = open(args[0], encoding='utf-8', errors='replace').read()
@@ -280,6 +307,10 @@ def main(action, *args):
         log, short, title, mode, keep = args
         open_window(log, short, title, mode, keep == '1')
     elif action == 'close':
+        # Claude gives a session's end only a moment and stops what it is still waiting
+        # on, so the closing runs in a process of its own that outlives this one.
+        detach([*PY, os.path.abspath(__file__), 'close-now', *args])
+    elif action == 'close-now':
         close_window(*args)
     elif action == 'task':
         log, task, label, cols = args

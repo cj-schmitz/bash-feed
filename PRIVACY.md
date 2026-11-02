@@ -14,7 +14,7 @@ Command output, file contents, file edits and the rest of your conversation are 
 
 - `~/.claude/bash-feed/<session>.log`: each session's feed: the commands, Claude's reason for each, their output, explanations and file edits
 - `~/.claude/bash-feed/out/`: full outputs too long for the window
-- `~/.claude/bash-feed/<session>.window` and `.cols`: the feed window's process id and width
+- `~/.claude/bash-feed/<session>.window` and `.cols`: the feed window's process id and width; `.stop`, briefly, to close the window when the session ends
 
 These are deleted after 90 days by default (`/bash-feed settings` → Window and logs → How long to keep logs). `/bash-feed delete` deletes them now. Logs can hold anything a command printed, secrets included, so treat the folder like your shell history.
 

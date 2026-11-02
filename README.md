@@ -11,7 +11,8 @@ A Claude Code mod that shows every Bash command Claude runs, with its output, in
 - Every step is numbered `§12`
 - The window is interactive: click a `▸` line (or press Enter for the whole step) to expand it in place, click again to collapse; ↑ / ↓ jump between steps; wheel, PgUp / PgDn, j / k scroll; Esc (or End, ⇧↓, ⌥↓, G) goes back to live. Select text with ⌥-drag
 - Window style = plain swaps in a plain `tail -F` log: native scrolling and selection, ⌘-click `▸` links to open the saved file, ⌘F `§` (⌥6) then ⌘G / ⇧⌘G to jump
-- The window opens behind Claude when a session starts and closes when that session's Claude process exits
+- The window opens behind Claude when a session starts and closes when the session ends (exit, `/clear`, `/resume`); after a `/clear` a fresh window opens
+- Resuming a session (`claude --resume` or `/resume`) brings its log back in the window, or says "Logs have been deleted" if it is gone
 
 ## Commands
 
@@ -66,7 +67,7 @@ Those scripts start these programs, each only for the reason given:
 - `ps` (macOS, Linux): find the Claude process, so the window closes when it exits
 - `taskkill` (Windows): close the window on `/bash-feed close`
 
-**Writes.** Only inside `~/.claude/bash-feed/`: one log per session (`<session>.log`), the window's process id and width beside it (`<session>.window`, `<session>.cols`), and saved full outputs in `out/`. It edits no build, start-up, settings or instructions file.
+**Writes.** Only inside `~/.claude/bash-feed/`: one log per session (`<session>.log`), the window's process id and width beside it (`<session>.window`, `<session>.cols`) and, for a moment when a session ends, `<session>.stop`, and saved full outputs in `out/`. It edits no build, start-up, settings or instructions file.
 
 **Settings.** `/bash-feed settings` changes only the mod's own `/config` rows (`bash-feed.<setting>`). It sets no environment variables.
 
@@ -80,7 +81,7 @@ Needs Python 3 (`python3`, or `py` on Windows).
 
 The window opens right next to Claude's window, on the same display: on its right if there is room, else its left, narrower to fit. On Linux this needs X11 and `wmctrl` or `xdotool` (Wayland does not let programs place windows, so the desktop decides there).
 
-The window's program closes itself when the Claude session that opened it exits.
+The window's program exits with code 0 when its session ends, so terminals that keep a window open after a failed program (Windows Terminal's default) still close it.
 
 ## Tokens
 
